@@ -1,7 +1,8 @@
-export type AgentEventType = 'FAVORITES_THRESHOLD';
+export type AgentEventType = 'FAVORITES_THRESHOLD' | 'FOLDER_THRESHOLD_REACHED';
 
 export type AgentEventPayloadMap = {
   FAVORITES_THRESHOLD: { count: number };
+  FOLDER_THRESHOLD_REACHED: { folderId: string; folderName: string; count: number };
 };
 
 export type AgentEvent<T extends AgentEventType = AgentEventType> = {

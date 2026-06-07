@@ -83,6 +83,11 @@ async function readAssetText(moduleRef: number): Promise<string> {
 async function ensureEmbeddingModel(): Promise<boolean> {
   if (featureExtractor) return true;
   try {
+    // 在 React Native 环境中，transformers 库可能不可用，直接返回 false 使用关键词检索
+    if (typeof window !== 'undefined' && !window.document) {
+      console.log('[RAG] Running in React Native, using keyword-only retrieval.');
+      return false;
+    }
     const { pipeline, env } = await import('@xenova/transformers');
     env.allowRemoteModels = true;
     env.useBrowserCache = true;
@@ -124,33 +129,48 @@ function keywordScore(queryTokens: string[], chunkTokens: string[]): number {
 
 export async function initRAG(): Promise<void> {
   if (initialized) return;
-  // #region agent log
-  fetch('http://127.0.0.1:7750/ingest/c7852349-c1c4-418e-b862-f082a33bb43e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'50dec4'},body:JSON.stringify({sessionId:'50dec4',runId:'initial',hypothesisId:'H3',location:'app/lib/rag.ts:122',message:'initRAG entered',data:{kbCount:KB_FILES.length},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
+  
+  try {
+    // #region agent log
+    fetch('http://127.0.0.1:7750/ingest/c7852349-c1c4-418e-b862-f082a33bb43e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'50dec4'},body:JSON.stringify({sessionId:'50dec4',runId:'initial',hypothesisId:'H3',location:'app/lib/rag.ts:122',message:'initRAG entered',data:{kbCount:KB_FILES.length},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
 
-  const loadedTexts = await Promise.all(
-    KB_FILES.map(async (file) => {
-      const text = await readAssetText(file.moduleRef);
-      return { filename: file.filename, text };
-    })
-  );
+    const loadedTexts = await Promise.all(
+      KB_FILES.map(async (file) => {
+        try {
+          const text = await readAssetText(file.moduleRef);
+          return { filename: file.filename, text };
+        } catch (error) {
+          console.warn(`[RAG] Failed to load ${file.filename}:`, error);
+          return { filename: file.filename, text: '' };
+        }
+      })
+    );
 
-  chunks = loadedTexts.flatMap((item) => splitIntoChunks(item.filename, item.text));
+    chunks = loadedTexts.flatMap((item) => item.text ? splitIntoChunks(item.filename, item.text) : []);
 
-  const canEmbed = await ensureEmbeddingModel();
-  if (canEmbed) {
-    const vectors = await Promise.all(chunks.map((c) => embedText(c.content)));
-    chunks = chunks.map((chunk, i) => ({ ...chunk, embedding: vectors[i] || undefined }));
-    embeddingReady = vectors.some(Boolean);
-  } else {
+    // 在移动端环境中跳过 embedding 模型加载，直接使用关键词检索
+    const canEmbed = await ensureEmbeddingModel();
+    if (canEmbed) {
+      const vectors = await Promise.all(chunks.map((c) => embedText(c.content)));
+      chunks = chunks.map((chunk, i) => ({ ...chunk, embedding: vectors[i] || undefined }));
+      embeddingReady = vectors.some(Boolean);
+    } else {
+      embeddingReady = false;
+    }
+
+    initialized = true;
+    // #region agent log
+    fetch('http://127.0.0.1:7750/ingest/c7852349-c1c4-418e-b862-f082a33bb43e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'50dec4'},body:JSON.stringify({sessionId:'50dec4',runId:'initial',hypothesisId:'H3',location:'app/lib/rag.ts:145',message:'initRAG completed',data:{chunkCount:chunks.length,embeddingReady},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    console.log(`[RAG] Initialized with ${chunks.length} chunks. embeddingReady=${embeddingReady}`);
+  } catch (error) {
+    console.error('[RAG] initRAG failed:', error);
+    // 即使初始化失败，也标记为已初始化，避免重复尝试导致崩溃
+    initialized = true;
+    chunks = [];
     embeddingReady = false;
   }
-
-  initialized = true;
-  // #region agent log
-  fetch('http://127.0.0.1:7750/ingest/c7852349-c1c4-418e-b862-f082a33bb43e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'50dec4'},body:JSON.stringify({sessionId:'50dec4',runId:'initial',hypothesisId:'H3',location:'app/lib/rag.ts:145',message:'initRAG completed',data:{chunkCount:chunks.length,embeddingReady},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
-  console.log(`[RAG] Initialized with ${chunks.length} chunks. embeddingReady=${embeddingReady}`);
 }
 
 export function isLegalQuestion(text: string): boolean {

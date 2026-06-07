@@ -5,18 +5,18 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import type { RefObject } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Image,
-    InteractionManager,
-    Keyboard,
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput, TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Image,
+  InteractionManager,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput, TouchableOpacity,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { callRagLegalAnswer, isLikelyListingSearchIntent, runAgent, runAgentEngineSelfCheck, type AgentMessage, type AgentResponse } from '../lib/agent-engine';
@@ -121,7 +121,7 @@ type UIMessage = {
   content: string;
   /** 用户气泡内海报/图片缩略（data URL 或 http），不入库 */
   imageUri?: string;
-  responseType?: AgentResponse['type'];
+  responseType?: AgentResponse['type'] | 'thinking';
   data?: any;
   sources?: string[];
   quickReplies?: string[];
@@ -177,6 +177,11 @@ export default function ChatPage() {
   const pendingListingDemandRef = useRef<string | null>(null);
   const consumedAutoMessageRef = useRef<string>('');
   const sendMessageRef = useRef<(text?: string) => Promise<void>>(async () => {});
+  
+  // ★ 静默爬虫状态
+  const [silentScrapeUrl, setSilentScrapeUrl] = useState<string | null>(null);
+  const [silentScrapePlatform, setSilentScrapePlatform] = useState<'anjuke' | 'beike' | 'lianjia'>('anjuke');
+  
   const [messages, setMessages] = useState<UIMessage[]>([
     {
       id: `init-${Date.now()}`,
@@ -205,22 +210,203 @@ export default function ChatPage() {
 
   useEffect(() => {
     const unsubscribe = onAgentEvent((event) => {
-      if (event.type !== 'FAVORITES_THRESHOLD') return;
-
-      const count = event.data.count;
-      const proactiveMsg: UIMessage = {
-        id: `evt-fav-${Date.now()}`,
-        role: 'assistant',
-        content: `检测到您已收藏 ${count} 套房源，是否需要我为您生成综合对比分析报告？`,
-        responseType: 'text',
-        quickReplies: ['生成报告', '稍后再说'],
-      };
-      setMessages((prev) => [...prev, proactiveMsg]);
-      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
+      if (event.type === 'FAVORITES_THRESHOLD') {
+        const count = event.data.count;
+        const proactiveMsg: UIMessage = {
+          id: `evt-fav-${Date.now()}`,
+          role: 'assistant',
+          content: `检测到您已收藏 ${count} 套房源，是否需要我为您生成综合对比分析报告？`,
+          responseType: 'text',
+          quickReplies: ['生成报告', '稍后再说'],
+        };
+        setMessages((prev) => [...prev, proactiveMsg]);
+        setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
+      } else if (event.type === 'FOLDER_THRESHOLD_REACHED') {
+        const eventData = event.data as { folderId: string; folderName: string; count: number };
+        const { folderId, folderName, count } = eventData;
+        
+        console.log('[Chat] FOLDER_THRESHOLD_REACHED event received:', { folderId, folderName, count });
+        
+        // 显示通知提示用户
+        Alert.alert(
+          '🤖 AI 智能推荐',
+          `正在根据「${folderName}」收藏记录智能推荐相似房源...`,
+          [{ text: '好的', style: 'default' }],
+          { cancelable: true }
+        );
+        
+        // 直接调用工具，不依赖 Agent 推理
+        (async () => {
+          const userMsg: UIMessage = {
+            id: `u-auto-${Date.now()}`,
+            role: 'user',
+            content: `📁 收藏夹「${folderName}」已达到 ${count} 套房源`,
+          };
+          setMessages((prev) => [...prev, userMsg]);
+          setLoading(true);
+          
+          try {
+            // 1. 分析收藏夹偏好
+            const analyzeTool = AGENT_TOOLS.find(t => t.name === 'analyze_folder_preferences');
+            const searchTool = AGENT_TOOLS.find(t => t.name === 'search_by_folder_preferences');
+            
+            if (!analyzeTool || !searchTool) {
+              throw new Error('推荐工具不可用');
+            }
+            
+            console.log('[Chat] Calling analyze_folder_preferences with folderId:', folderId);
+            const analysisResult: any = await analyzeTool.execute({ folderId });
+            
+            console.log('[Chat] Analysis result:', JSON.stringify(analysisResult).substring(0, 500));
+            
+            if (!analysisResult.success) {
+              console.error('[Chat] Analysis failed:', analysisResult.error);
+              throw new Error(analysisResult.error || '偏好分析失败');
+            }
+            
+            console.log('[Chat] Analysis success:', {
+              priceRange: analysisResult.priceRange,
+              topDistricts: analysisResult.topDistricts?.length,
+              topRoomTypes: analysisResult.topRoomTypes?.length,
+              features: analysisResult.features,
+            });
+            
+            // 1.5. 触发静默爬虫（基于偏好）
+            try {
+              const prefs = await getPrefs();
+              const { buildAnjukeUrl, getCitySlug } = require('../lib/webview-scraper');
+              const citySlug = getCitySlug(prefs.city, 'anjuke');
+              
+              const filters = {
+                budgetMin: analysisResult.priceRange?.avg > 0 
+                  ? String(Math.round(analysisResult.priceRange.avg * 0.8))
+                  : undefined,
+                budgetMax: analysisResult.priceRange?.avg > 0
+                  ? String(Math.round(analysisResult.priceRange.avg * 1.2))
+                  : undefined,
+              };
+              
+              const scrapeUrl = buildAnjukeUrl(citySlug, 1, filters);
+              console.log('[Chat] Triggering silent scrape:', scrapeUrl);
+              
+              setSilentScrapeUrl(scrapeUrl);
+              setSilentScrapePlatform('anjuke');
+              
+              // 等待爬虫完成（缩短到5秒，避免用户等待过久）
+              await new Promise(resolve => setTimeout(resolve, 5000));
+            } catch (scrapeError: any) {
+              console.warn('[Chat] Failed to prepare scrape:', scrapeError);
+              // 爬虫失败不影响推荐流程
+            }
+            
+            // 2. 基于偏好搜索房源（包含新抓取的）
+            console.log('[Chat] Calling search_by_folder_preferences with folderId:', folderId);
+            const searchResult: any = await searchTool.execute({ folderId });
+            
+            const listings = Array.isArray(searchResult.listings) ? searchResult.listings : [];
+            console.log('[Chat] Search result:', {
+              found: listings.length,
+              total: searchResult.total,
+              searchParams: searchResult.searchParams,
+            });
+            
+            // 3. 构造简洁的推荐消息
+            let content = `根据您在「${folderName}」中收藏的 ${count} 套房源，我为您推荐以下相似房源：\n\n`;
+            
+            if (listings.length === 0) {
+              content = `已分析「${folderName}」中的 ${count} 套房源偏好，但暂未找到更多符合条件的房源。建议：\n\n• 在「找房」页面抓取更多房源\n• 调整筛选条件扩大搜索范围`;
+            } else {
+              // 简要说明推荐依据
+              const { priceRange, topDistricts, features } = analysisResult;
+              const hints: string[] = [];
+              
+              if (priceRange?.avg > 0) {
+                hints.push(`价格在 ${Math.round(priceRange.avg * 0.8)}-${Math.round(priceRange.avg * 1.2)} 元`);
+              }
+              if (topDistricts?.length > 0) {
+                hints.push(`${topDistricts[0].district}附近`);
+              }
+              if (features?.subwayRatio >= 50) {
+                hints.push('近地铁');
+              }
+              
+              if (hints.length > 0) {
+                content += `💡 推荐依据：${hints.join('、')}\n`;
+              }
+            }
+            
+            const assistantMsg: UIMessage = {
+              id: `a-folder-${Date.now()}`,
+              role: 'assistant',
+              content,
+              responseType: listings.length > 0 ? 'listing_cards' : 'text',
+              data: listings,
+            };
+            
+            setMessages((prev) => [...prev, assistantMsg]);
+            
+            // 如果有推荐房源，添加后续引导
+            if (listings.length > 0) {
+              const guideMsg: UIMessage = {
+                id: `guide-folder-${Date.now()}`,
+                role: 'assistant',
+                content: '点击房源卡片查看详情，或告诉我你的想法。',
+                responseType: 'text',
+                quickReplies: ['继续推荐', '分析这几套'],
+              };
+              setMessages((prev) => [...prev, guideMsg]);
+            }
+            
+            // 持久化会话
+            await persistSession([...messages, userMsg, assistantMsg]);
+            
+          } catch (error: any) {
+            console.error('[Chat] Folder recommendation failed:', error);
+            console.error('[Chat] Error stack:', error.stack);
+            const errorMsg: UIMessage = {
+              id: `e-folder-${Date.now()}`,
+              role: 'assistant',
+              content: `推荐失败：${error?.message || '未知错误'}。请稍后重试或手动在「找房」页面搜索。`,
+              responseType: 'text',
+            };
+            setMessages((prev) => [...prev, errorMsg]);
+            await persistSession([...messages, userMsg, errorMsg]);
+          } finally {
+            setLoading(false);
+            setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+          }
+        })();
+        
+        // Show notification if user is not on chat screen (background processing)
+        import('../lib/notification-state').then(({ notificationState }) => {
+          notificationState.showNotification({
+            id: `folder-${event.ts}`,
+            message: `AI 正在为您分析「${folderName}」收藏夹的偏好并推荐房源`,
+            timestamp: event.ts,
+            folderName,
+          });
+        }).catch(() => {
+          // Silently fail if notification system is not available
+        });
+      }
     });
 
     return unsubscribe;
   }, []);
+  
+  // Dismiss notification when loading completes
+  useEffect(() => {
+    if (!loading) {
+      // Dismiss notification after Agent completes processing
+      import('../lib/notification-state').then(({ notificationState }) => {
+        setTimeout(() => {
+          notificationState.dismissNotification();
+        }, 2000);
+      }).catch(() => {
+        // Silently fail
+      });
+    }
+  }, [loading]);
 
   useEffect(() => {
     const showListener = Keyboard.addListener(
@@ -405,6 +591,7 @@ export default function ChatPage() {
         }
       }
       const response = await runAgent(agentInput, toConversationHistory(messages));
+      console.log('[Chat] runAgent returned:', response.type, Array.isArray(response.data), response.data?.length);
       const reply: UIMessage = {
         id: `a-${Date.now()}`,
         role: 'assistant',
@@ -441,7 +628,10 @@ export default function ChatPage() {
     }
   }
 
-  sendMessageRef.current = sendMessage;
+  // ★ 修复：使用 useEffect 确保 sendMessageRef 在事件监听器注册后更新
+  useEffect(() => {
+    sendMessageRef.current = sendMessage;
+  });
 
   useEffect(() => {
     const raw = Array.isArray(autoMessage) ? autoMessage[0] : autoMessage;
@@ -632,21 +822,78 @@ export default function ChatPage() {
         imageUrl: dataUrl,
         listingId: `img-${Date.now()}`,
       });
+      
+      // 检查是否成功
+      if (!(toolResult as any)?.success) {
+        const errorMsg = (toolResult as any)?.error || '图片分析失败';
+        const errReply: UIMessage = {
+          id: `e-img-${Date.now()}`,
+          role: 'assistant',
+          content: `❌ ${errorMsg}`,
+          responseType: 'text',
+        };
+        const finalMessages = [...nextMessages, errReply];
+        setMessages(finalMessages);
+        await persistSession(finalMessages);
+        return;
+      }
+      
       const findings = Array.isArray((toolResult as any)?.findings)
         ? (toolResult as any).findings
         : [];
       const score = (toolResult as any)?.score;
       const summary = (toolResult as any)?.summary || '';
-      const replyText = `已完成图片分析：\n\n${
-        findings.length
-          ? findings.map((f: string, i: number) => `${i + 1}. ${f}`).join('\n')
-          : '未提取到明确风险点'
-      }${summary ? `\n\n${summary}` : ''}\n\n综合评分：${typeof score === 'number' ? score.toFixed(1) : 'N/A'}`;
+      const highlights = Array.isArray((toolResult as any)?.highlights)
+        ? (toolResult as any).highlights
+        : [];
+      const risks = Array.isArray((toolResult as any)?.risks)
+        ? (toolResult as any).risks
+        : [];
+      
+      // 构建回复文本
+      let replyText = '✅ 已完成图片分析：\n\n';
+      
+      // 综合评分
+      if (typeof score === 'number') {
+        replyText += `📊 **综合评分**：${score.toFixed(1)} / 10\n\n`;
+      }
+      
+      // 主要发现
+      if (findings.length > 0) {
+        replyText += '**主要发现**：\n';
+        findings.forEach((f: string, i: number) => {
+          replyText += `${i + 1}. ${f}\n`;
+        });
+        replyText += '\n';
+      }
+      
+      // 亮点
+      if (highlights.length > 0) {
+        replyText += '✨ **亮点**：\n';
+        highlights.forEach((h: string) => {
+          replyText += `• ${h}\n`;
+        });
+        replyText += '\n';
+      }
+      
+      // 风险点
+      if (risks.length > 0) {
+        replyText += '⚠️ **需要注意**：\n';
+        risks.forEach((r: string) => {
+          replyText += `• ${r}\n`;
+        });
+        replyText += '\n';
+      }
+      
+      // 总结
+      if (summary) {
+        replyText += `💡 **总结**：${summary}`;
+      }
 
       const reply: UIMessage = {
         id: `a-img-${Date.now()}`,
         role: 'assistant',
-        content: replyText,
+        content: replyText.trim(),
         responseType: 'text',
         data: toolResult,
       };
@@ -657,7 +904,7 @@ export default function ChatPage() {
       const errReply: UIMessage = {
         id: `e-img-${Date.now()}`,
         role: 'assistant',
-        content: `图片分析失败：${error?.message || '未知错误'}`,
+        content: `❌ 图片分析失败：${error?.message || '未知错误'}`,
         responseType: 'text',
       };
       const finalMessages = [...nextMessages, errReply];
@@ -710,26 +957,10 @@ export default function ChatPage() {
         </TouchableOpacity>
       </View>
 
-      {Platform.OS === 'web' ? (
-        <ChatBody
-          scrollRef={scrollRef}
-          messages={messages}
-          loading={loading}
-          router={router}
-          keyboardHeight={keyboardHeight}
-          input={input}
-          setInput={setInput}
-          inputHeight={inputHeight}
-          setInputHeight={setInputHeight}
-          sendMessage={sendMessage}
-          handlePickImage={handlePickImage}
-          loadingDisabled={loading}
-          onQuickLegal={sendQuickLegalFromKb}
-        />
-      ) : (
+      {Platform.OS === 'ios' ? (
         <KeyboardAvoidingView
           style={s.flexFill}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'padding'}
+          behavior="padding"
           keyboardVerticalOffset={tabBarHeight}
         >
           <ChatBody
@@ -737,7 +968,6 @@ export default function ChatPage() {
             messages={messages}
             loading={loading}
             router={router}
-            keyboardHeight={keyboardHeight}
             input={input}
             setInput={setInput}
             inputHeight={inputHeight}
@@ -748,7 +978,56 @@ export default function ChatPage() {
             onQuickLegal={sendQuickLegalFromKb}
           />
         </KeyboardAvoidingView>
+      ) : (
+        <ChatBody
+          scrollRef={scrollRef}
+          messages={messages}
+          loading={loading}
+          router={router}
+          input={input}
+          setInput={setInput}
+          inputHeight={inputHeight}
+          setInputHeight={setInputHeight}
+          sendMessage={sendMessage}
+          handlePickImage={handlePickImage}
+          loadingDisabled={loading}
+          onQuickLegal={sendQuickLegalFromKb}
+        />
       )}
+      
+      {/* ★ 静默爬虫 WebView */}
+      {silentScrapeUrl ? (
+        <View style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden' }}>
+          {(() => {
+            const { BackgroundWebView } = require('../components/BackgroundWebView');
+            return (
+              <BackgroundWebView
+                url={silentScrapeUrl}
+                platform={silentScrapePlatform}
+                timeout={15000}
+                onExtracted={async (result: any) => {
+                  console.log('[Chat] Silent scrape completed:', result.count, 'listings');
+                  if (result.success && result.listings?.length > 0) {
+                    const { processScrapeResult } = require('../lib/silent-scraper');
+                    const prefs = await getPrefs();
+                    const saved = await processScrapeResult(result, prefs.city);
+                    console.log('[Chat] Saved', saved, 'new listings');
+                  }
+                  setSilentScrapeUrl(null);
+                }}
+                onError={(error: string) => {
+                  console.warn('[Chat] Silent scrape failed:', error);
+                  setSilentScrapeUrl(null);
+                }}
+                onCaptchaDetected={() => {
+                  console.warn('[Chat] CAPTCHA detected, skipping scrape');
+                  setSilentScrapeUrl(null);
+                }}
+              />
+            );
+          })()}
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -758,7 +1037,6 @@ type ChatBodyProps = {
   messages: UIMessage[];
   loading: boolean;
   router: ReturnType<typeof useRouter>;
-  keyboardHeight: number;
   input: string;
   setInput: (v: string) => void;
   inputHeight: number;
@@ -774,7 +1052,6 @@ function ChatBody({
   messages,
   loading,
   router,
-  keyboardHeight,
   input,
   setInput,
   inputHeight,
@@ -793,6 +1070,7 @@ function ChatBody({
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
+        onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
       >
           {messages.map((m) => (
             <View key={m.id} style={[s.bubble, m.role === 'user' ? s.bubbleUser : s.bubbleAI]}>
@@ -871,71 +1149,72 @@ function ChatBody({
               <View style={s.bubbleAvatarWrap}>
                 <Ionicons name="sparkles-outline" size={18} color={Colors.primary} />
               </View>
-              <View style={[s.bubbleContent, s.bubbleContentAI]}>
+              <View style={[s.bubbleContent, s.bubbleContentAI, s.thinkingBubble]}>
                 <ActivityIndicator color={Colors.primary} size="small" />
+                <Text style={s.thinkingText}>正在思考...</Text>
               </View>
             </View>
           )}
         </ScrollView>
 
-        {keyboardHeight === 0 ? (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={s.legalQuickScroll}
-            contentContainerStyle={s.legalQuickScrollContent}
-            keyboardShouldPersistTaps="handled"
-          >
-            {LEGAL_QUICK_TOPICS.map((t, i) => (
-              <TouchableOpacity
-                key={t.label}
-                style={[s.legalQuickBtn, i === LEGAL_QUICK_TOPICS.length - 1 && s.legalQuickBtnLast]}
-                onPress={() => onQuickLegal(t.label, t.ragQuery)}
-                disabled={loadingDisabled}
-                accessibilityRole="button"
-                accessibilityLabel={t.label}
-              >
-                <Text style={s.legalQuickBtnText} numberOfLines={1}>{t.label}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        ) : null}
-
-        <View style={s.inputBar}>
+      <View style={s.inputSection}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={s.legalQuickScroll}
+        contentContainerStyle={s.legalQuickScrollContent}
+        keyboardShouldPersistTaps="handled"
+      >
+        {LEGAL_QUICK_TOPICS.map((t, i) => (
           <TouchableOpacity
-            style={s.photoBtn}
-            onPress={handlePickImage}
+            key={t.label}
+            style={[s.legalQuickBtn, i === LEGAL_QUICK_TOPICS.length - 1 && s.legalQuickBtnLast]}
+            onPress={() => onQuickLegal(t.label, t.ragQuery)}
             disabled={loadingDisabled}
-            hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
-            accessibilityLabel="上传图片"
+            accessibilityRole="button"
+            accessibilityLabel={t.label}
           >
-            <Ionicons name="camera-outline" size={22} color={Colors.textSecondary} />
+            <Text style={s.legalQuickBtnText} numberOfLines={1}>{t.label}</Text>
           </TouchableOpacity>
-          <TextInput
-            style={[s.input, { height: Math.min(Math.max(inputHeight, 40), 120) }]}
-            placeholder="输入问题，或粘贴房源链接..."
-            placeholderTextColor="#bbb"
-            value={input}
-            onChangeText={setInput}
-            onContentSizeChange={(e) => {
-              const h = e.nativeEvent.contentSize.height || 0;
-              if (h > 0) setInputHeight(h);
-            }}
-            onSubmitEditing={() => sendMessage()}
-            onFocus={() => setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150)}
-            returnKeyType="send"
-            multiline
-            maxLength={2000}
-            textAlignVertical="top"
-          />
-          <TouchableOpacity
-            style={[s.sendBtn, (!input.trim() || loadingDisabled) && s.sendBtnDis]}
-            onPress={() => sendMessage()}
-            disabled={!input.trim() || loadingDisabled}
-          >
-            <Ionicons name="arrow-up" size={22} color={Colors.textInverse} />
-          </TouchableOpacity>
-        </View>
+        ))}
+      </ScrollView>
+
+      <View style={s.inputBar}>
+        <TouchableOpacity
+          style={s.photoBtn}
+          onPress={handlePickImage}
+          disabled={loadingDisabled}
+          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+          accessibilityLabel="上传图片"
+        >
+          <Ionicons name="camera-outline" size={22} color={Colors.textSecondary} />
+        </TouchableOpacity>
+        <TextInput
+          style={[s.input, { height: Math.min(Math.max(inputHeight, 40), 120) }]}
+          placeholder="输入问题，或粘贴房源链接..."
+          placeholderTextColor="#bbb"
+          value={input}
+          onChangeText={setInput}
+          onContentSizeChange={(e) => {
+            const h = e.nativeEvent.contentSize.height || 0;
+            if (h > 0) setInputHeight(h);
+          }}
+          onSubmitEditing={() => sendMessage()}
+          onFocus={() => setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150)}
+          returnKeyType="send"
+          multiline
+          maxLength={2000}
+          textAlignVertical="top"
+        />
+        <TouchableOpacity
+          style={[s.sendBtn, (!input.trim() || loadingDisabled) && s.sendBtnDis]}
+          onPress={() => sendMessage()}
+          disabled={!input.trim() || loadingDisabled}
+        >
+          <Ionicons name="arrow-up" size={22} color={Colors.textInverse} />
+        </TouchableOpacity>
+      </View>
+      </View>
     </View>
   );
 }
@@ -972,9 +1251,13 @@ const s = StyleSheet.create({
   msgList: { flex: 1, paddingHorizontal: Spacing.sm },
   msgListContent: {
     flexGrow: 1,
-    justifyContent: 'flex-end',
     paddingTop: Spacing.sm,
     paddingBottom: Spacing.sm,
+  },
+  inputSection: {
+    backgroundColor: Colors.bgPrimary,
+    borderTopWidth: 1,
+    borderTopColor: Colors.divider,
   },
 
   bubble: { flexDirection: 'row', marginBottom: Spacing.md, maxWidth: '90%' },
@@ -1143,4 +1426,15 @@ const s = StyleSheet.create({
     justifyContent: 'center',
   },
   sendBtnDis: { backgroundColor: Colors.textTertiary },
+  
+  thinkingBubble: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  thinkingText: {
+    ...Typography.body2,
+    color: Colors.textSecondary,
+    fontStyle: 'italic',
+  },
 });

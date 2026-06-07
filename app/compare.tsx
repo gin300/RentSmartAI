@@ -1,19 +1,45 @@
-import { useState, useCallback } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet,
   Alert, Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useFocusEffect } from 'expo-router';
-import { getCompareList, removeFromCompare, clearCompare, getPrefs, type Listing } from './lib/storage';
 import { generateCompareReport } from './lib/api';
+import { buildListingDestinationCandidates, calculateCommute } from './lib/geo';
 import { MarkdownView } from './lib/markdown';
-import { calculateCommute, buildListingDestinationCandidates } from './lib/geo';
+import { clearCompare, getCompareList, getPrefs, removeFromCompare, type Listing } from './lib/storage';
 
 const COMMUTE_RATE_LIMIT_MS = 350;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// 平台标签映射
+function getPlatformLabel(platform: string): string {
+  const platformMap: Record<string, string> = {
+    beike: '贝壳',
+    anjuke: '安居客',
+    lianjia: '链家',
+    xiaohongshu: '小红书',
+  };
+  return platformMap[platform] || platform;
+}
+
+// 平台颜色映射
+function getPlatformColor(platform: string): string {
+  const colorMap: Record<string, string> = {
+    beike: '#00ae66',
+    anjuke: '#fe5500',
+    lianjia: '#00ae66',
+    xiaohongshu: '#ff2442',
+  };
+  return colorMap[platform] || '#666';
 }
 
 export default function ComparePage() {
@@ -37,6 +63,9 @@ export default function ComparePage() {
     setWorkAddressConfigured(true);
     setCommuteLoading(true);
     const next: Record<string, string> = {};
+    let hasApiError = false;
+    let apiErrorMessage = '';
+    
     for (let i = 0; i < list.length; i += 1) {
       const listing = list[i];
       
@@ -48,14 +77,40 @@ export default function ComparePage() {
         continue;
       }
       const [primary, ...fallbacks] = candidates;
-      const result = await calculateCommute(workAddress, primary, cityCode, fallbacks);
-      if (result.success) {
-        const modeSuffix = result.routeModeLabel ? `（${result.routeModeLabel}）` : '';
-        next[listing.id] = `${result.distance} / ${result.duration}${modeSuffix}`;
-      } else {
-        next[listing.id] = '暂无法估算';
-        if (result.errorReason) {
-          console.log(`[通勤] ${listing.title}: ${result.errorReason}`);
+      
+      try {
+        const result = await calculateCommute(workAddress, primary, cityCode, fallbacks);
+        if (result.success) {
+          const modeSuffix = result.routeModeLabel ? `（${result.routeModeLabel}）` : '';
+          next[listing.id] = `${result.distance} / ${result.duration}${modeSuffix}`;
+        } else {
+          // 检查是否是API配置错误
+          if (result.errorReason && (
+            result.errorReason.includes('API Key') ||
+            result.errorReason.includes('未配置') ||
+            result.errorReason.includes('无效') ||
+            result.errorReason.includes('配额')
+          )) {
+            hasApiError = true;
+            apiErrorMessage = result.errorReason;
+            next[listing.id] = 'API配置错误';
+          } else {
+            next[listing.id] = '暂无法估算';
+          }
+          
+          if (result.errorReason) {
+            console.log(`[通勤] ${listing.title}: ${result.errorReason}`);
+          }
+        }
+      } catch (error: any) {
+        console.error(`[通勤] ${listing.title} 异常:`, error);
+        const errorMsg = error?.message || '';
+        if (errorMsg.includes('API Key') || errorMsg.includes('未配置')) {
+          hasApiError = true;
+          apiErrorMessage = errorMsg;
+          next[listing.id] = 'API配置错误';
+        } else {
+          next[listing.id] = '计算失败';
         }
       }
       
@@ -63,8 +118,18 @@ export default function ComparePage() {
         await sleep(COMMUTE_RATE_LIMIT_MS);
       }
     }
+    
     setCommuteById(next);
     setCommuteLoading(false);
+    
+    // 如果有API错误，提示用户
+    if (hasApiError && apiErrorMessage) {
+      Alert.alert(
+        '通勤计算失败',
+        apiErrorMessage + '\n\n请前往「我的」页面检查高德地图 API Key 配置。',
+        [{ text: '知道了' }]
+      );
+    }
   }, []);
 
   const loadCompareList = useCallback(async () => {
@@ -190,6 +255,15 @@ export default function ComparePage() {
                 </TouchableOpacity>
               </View>
 
+              {/* 平台标识 */}
+              {listing.platform && (
+                <View style={s.platformBadge}>
+                  <Text style={s.platformText}>
+                    {getPlatformLabel(listing.platform)}
+                  </Text>
+                </View>
+              )}
+
               {/* 标题 */}
               <TouchableOpacity
                 onPress={() => router.push(`/listing/${listing.id}`)}
@@ -230,6 +304,10 @@ export default function ComparePage() {
 
         {/* 对比维度表格 */}
         <View style={s.compareTable}>
+          <CompareRow
+            label="来源平台"
+            values={compareList.map(l => getPlatformLabel(l.platform || '未知'))}
+          />
           <CompareRow
             label="户型"
             values={compareList.map(l => l.roomType)}
@@ -461,6 +539,21 @@ const s = StyleSheet.create({
     justifyContent: 'center',
   },
   removeBtnText: { fontSize: 12, color: '#fff', fontWeight: '600' },
+  platformBadge: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: '#e8f7f0',
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#c8eddc',
+  },
+  platformText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#00ae66',
+  },
   cardTitle: {
     fontSize: 13,
     fontWeight: '600',

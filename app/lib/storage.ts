@@ -25,6 +25,12 @@ export type Listing = {
   platform?: string;
   scrapedAt?: string;
   cityCode?: string;
+  // ── 详情页增强字段 ──────────────────────────────────────────
+  detailDescription?: string;   // 详情页正文摘要（最多 2000 字）
+  detailImages?: string[];      // 详情页图片 URL（最多 8 张）
+  facilities?: string[];        // 设施词（空调、洗衣机等）
+  listedDaysHint?: string;      // 页面可见的挂牌天数文案
+  detailFetchedAt?: string;     // 详情抓取时间
 };
 
 export type UserPrefs = {
@@ -68,6 +74,44 @@ export type ChatSession = {
   updatedAt: string;
 };
 
+// ── 小红书房源评价记录 ────────────────────────────────────────
+export type XHSReviewRecord = {
+  listingId: string;
+  community: string;
+  validPosts: Array<{
+    title: string;
+    content: string;
+    author: string;
+    images: string[];
+    url: string;
+    scrapedAt: string;
+  }>;
+  invalidPosts: Array<{
+    title: string;
+    reason: string;
+  }>;
+  summary: string;
+  stats: {
+    totalScraped: number;
+    validCount: number;
+    invalidCount: number;
+  };
+  createdAt: string;
+};
+
+// ── 多收藏夹类型 ────────────────────────────────────────────────
+export type FavoriteFolder = {
+  id: string;
+  name: string;
+  createdAt: string;
+};
+
+export type FavoriteListing = {
+  listingId: string;
+  folderId: string;
+  addedAt: string;
+};
+
 // ── 默认值 ────────────────────────────────────────────────────
 export const DEFAULT_PREFS: UserPrefs = {
   city: 'bj',
@@ -87,21 +131,59 @@ export const DEFAULT_PREFS: UserPrefs = {
 // ── 存储 Key ──────────────────────────────────────────────────
 const KEYS = {
   FAVORITES: 'rentsmart_favorites',
+  FAVORITE_FOLDERS: 'rentsmart_favorite_folders',
+  FAVORITE_LISTINGS: 'rentsmart_favorite_listings',
   HISTORY: 'rentsmart_history',
   COMPARE: 'rentsmart_compare',
   DEEP_ANALYSIS: 'rentsmart_deep_analysis',
+  XHS_REVIEWS: 'rentsmart_xhs_reviews',
   CHAT_SESSIONS: 'rentsmart_chat_sessions',
   PREFS: 'rentsmart_prefs',
   STATS: 'rentsmart_stats',
   API_CONFIG: 'rentsmart_api',
+  BEIKE_COOKIE: 'rentsmart_beike_cookie',
+  LIANJIA_COOKIE: 'rentsmart_lianjia_cookie',
+  XIAOHONGSHU_COOKIE: 'rentsmart_xiaohongshu_cookie',
+  FOLDER_TIP_SHOWN: 'folder_tip_shown',
 };
 
 // ── 收藏夹 ────────────────────────────────────────────────────
+/**
+ * 获取所有收藏的房源（兼容旧版，实际从多收藏夹系统读取）
+ * @deprecated 建议使用 getFolderListings 或 getAllFavoriteListings
+ */
 export async function getFavorites(): Promise<Listing[]> {
-  try {
-    const data = await AsyncStorage.getItem(KEYS.FAVORITES);
-    return data ? JSON.parse(data) : [];
-  } catch { return []; }
+  // ★ 从新的多收藏夹系统读取，确保数据一致性
+  return await getAllFavoriteListings();
+}
+
+/**
+ * 获取所有收藏的房源（从多收藏夹系统）
+ */
+export async function getAllFavoriteListings(): Promise<Listing[]> {
+  const associations = await getFavoriteListings();
+  const uniqueListingIds = [...new Set(associations.map(a => a.listingId))];
+  
+  // 从 history 中获取完整房源数据
+  const history = await getHistory();
+  return history.filter(l => uniqueListingIds.includes(l.id));
+}
+
+/**
+ * 获取收藏数量（统一接口）
+ * ★ 只统计真实存在于 history 中的房源，避免"幽灵收藏"
+ */
+export async function getFavoritesCount(): Promise<number> {
+  const associations = await getFavoriteListings();
+  const uniqueListingIds = new Set(associations.map(a => a.listingId));
+  
+  // 验证这些房源是否真实存在于 history 中
+  const history = await getHistory();
+  const historyIds = new Set(history.map(h => h.id));
+  
+  // 只统计真实存在的房源
+  const validListingIds = Array.from(uniqueListingIds).filter(id => historyIds.has(id));
+  return validListingIds.length;
 }
 
 export async function addFavorite(listing: Listing): Promise<Listing[]> {
@@ -141,7 +223,13 @@ export async function clearFavorites(): Promise<void> {
 export async function getHistory(): Promise<Listing[]> {
   try {
     const data = await AsyncStorage.getItem(KEYS.HISTORY);
-    return data ? JSON.parse(data) : [];
+    const listings = data ? JSON.parse(data) : [];
+    // 按 scrapedAt 降序排列，确保最新房源在前
+    return listings.sort((a: Listing, b: Listing) => {
+      const aTs = new Date(a.scrapedAt || 0).getTime();
+      const bTs = new Date(b.scrapedAt || 0).getTime();
+      return bTs - aTs; // 降序：新的在前
+    });
   } catch { return []; }
 }
 
@@ -200,7 +288,14 @@ export async function addToHistory(listings: Listing[]): Promise<{ added: number
     incomingFingerprints.add(fp);
     return true;
   });
-  const updated = [...newOnes, ...history].slice(0, 500);
+  // ★ 按 scrapedAt 降序排列，确保新房源在上
+  const updated = [...newOnes, ...history]
+    .sort((a, b) => {
+      const aTs = new Date(a.scrapedAt || 0).getTime();
+      const bTs = new Date(b.scrapedAt || 0).getTime();
+      return bTs - aTs; // 降序：新的在前
+    })
+    .slice(0, 500);
   await AsyncStorage.setItem(KEYS.HISTORY, JSON.stringify(updated));
   await updateStats({ analyzed: updated.length });
   return { added: newOnes.length, skipped: listings.length - newOnes.length };
@@ -217,6 +312,16 @@ export async function clearHistoryByCity(cityCode: string): Promise<number> {
   await AsyncStorage.setItem(KEYS.HISTORY, JSON.stringify(updated));
   await updateStats({ analyzed: updated.length });
   return history.length - updated.length;
+}
+
+/** 更新单条 history 房源的详情字段（不影响其他字段） */
+export async function patchListingDetail(
+  id: string,
+  detail: Pick<Listing, 'detailDescription' | 'detailImages' | 'facilities' | 'listedDaysHint' | 'detailFetchedAt'>,
+): Promise<void> {
+  const history = await getHistory();
+  const updated = history.map(item => item.id === id ? { ...item, ...detail } : item);
+  await AsyncStorage.setItem(KEYS.HISTORY, JSON.stringify(updated));
 }
 
 export async function upsertHistoryListings(listings: Listing[]): Promise<void> {
@@ -278,6 +383,11 @@ export async function getDeepAnalysisRecords(): Promise<DeepAnalysisRecord[]> {
   } catch {
     return [];
   }
+}
+
+export async function getDeepAnalysisRecordByListingId(listingId: string): Promise<DeepAnalysisRecord | null> {
+  const records = await getDeepAnalysisRecords();
+  return records.find(r => r.listingId === listingId) || null;
 }
 
 export async function saveDeepAnalysisRecord(record: DeepAnalysisRecord): Promise<void> {
@@ -364,29 +474,21 @@ export type ApiConfig = {
 const DEFAULT_API_CONFIG: ApiConfig = {
   textModel: 'deepseek',
   visionModel: 'glm4v',
-  apiKey: 'sk-43641fd0f8104328a54bdceb818fb3bf',
-  deepseekApiKey: 'sk-43641fd0f8104328a54bdceb818fb3bf',
-  glmApiKey: 'f8b60c5307e04ead8b1071b40720e3ee.nMNUtT6WfmVPv0I5',
+  apiKey: '',
+  deepseekApiKey: '',
+  glmApiKey: '',
   apiBase: '',
-  amapKey: '1beebb29ec2b17017ec1603083aef3c4',
-  amapJsKey: '4447746781cb9aed094acc536da334df',
+  amapKey: '',
+  amapJsKey: '',
   commuteRouteMode: 'transit',
 };
 
 export async function getApiConfig(): Promise<ApiConfig> {
   try {
     const data = await AsyncStorage.getItem(KEYS.API_CONFIG);
-    const merged: ApiConfig = data
+    return data
       ? { ...DEFAULT_API_CONFIG, ...JSON.parse(data) }
       : DEFAULT_API_CONFIG;
-    // 本地若曾保存空字符串，会覆盖内置高德 Web Key，导致通勤/地理编码误报「未配置」
-    if (!String(merged.amapKey ?? '').trim()) {
-      merged.amapKey = DEFAULT_API_CONFIG.amapKey;
-    }
-    if (!String(merged.amapJsKey ?? '').trim()) {
-      merged.amapJsKey = DEFAULT_API_CONFIG.amapJsKey;
-    }
-    return merged;
   } catch {
     return DEFAULT_API_CONFIG;
   }
@@ -395,4 +497,501 @@ export async function getApiConfig(): Promise<ApiConfig> {
 export async function saveApiConfig(config: Partial<ApiConfig>): Promise<void> {
   const current = await getApiConfig();
   await AsyncStorage.setItem(KEYS.API_CONFIG, JSON.stringify({ ...current, ...config }));
+}
+
+// ── 平台登录状态 ────────────────────────────────────────────────
+export type PlatformLoginStatus = {
+  beike?: boolean;
+  anjuke?: boolean;
+  lianjia?: boolean;
+  xiaohongshu?: boolean;
+};
+
+export async function getPlatformLoginStatus(): Promise<PlatformLoginStatus> {
+  try {
+    // ★ 贝壳平台：检查 Cookie 是否存在，而不是只看标记
+    const beikeCookie = await getBeikeCookie();
+    const hasBeikeCookie = !!beikeCookie && beikeCookie.length > 0;
+    
+    // 其他平台仍然使用标记
+    const data = await AsyncStorage.getItem('rentsmart_platform_login');
+    const status: PlatformLoginStatus = data ? JSON.parse(data) : {};
+    
+    // 覆盖贝壳的状态为实际 Cookie 状态
+    status.beike = hasBeikeCookie;
+    
+    return status;
+  } catch { return {}; }
+}
+
+export async function setPlatformLoggedIn(platform: keyof PlatformLoginStatus, value: boolean): Promise<void> {
+  const current = await getPlatformLoginStatus();
+  await AsyncStorage.setItem('rentsmart_platform_login', JSON.stringify({ ...current, [platform]: value }));
+}
+
+// ── 自动看房已爬页记录 ──────────────────────────────────────────
+export type ScrapedPagesRecord = { pages: number[]; lastActivePage: number };
+
+function scrapedPagesKey(cityCode: string, platform: string): string {
+  return `rentsmart_scraped_pages_${cityCode}_${platform}`;
+}
+
+export async function getScrapedPages(cityCode: string, platform: string): Promise<ScrapedPagesRecord> {
+  try {
+    const data = await AsyncStorage.getItem(scrapedPagesKey(cityCode, platform));
+    return data ? JSON.parse(data) : { pages: [], lastActivePage: 0 };
+  } catch { return { pages: [], lastActivePage: 0 }; }
+}
+
+export async function markPageScraped(cityCode: string, platform: string, page: number): Promise<void> {
+  const record = await getScrapedPages(cityCode, platform);
+  if (!record.pages.includes(page)) record.pages.push(page);
+  record.lastActivePage = page;
+  await AsyncStorage.setItem(scrapedPagesKey(cityCode, platform), JSON.stringify(record));
+}
+
+export async function clearScrapedPages(cityCode: string, platform: string): Promise<void> {
+  await AsyncStorage.removeItem(scrapedPagesKey(cityCode, platform));
+}
+
+// ── 在线看房浏览记录（用户手动翻页）─────────────────────────────
+export type BrowseRecord = {
+  platform: string;
+  page: number;
+  url: string;
+  recordedAt: string;
+  listingCount?: number;
+  processed?: boolean;
+};
+
+function browseRecordsKey(cityCode: string, platform: string): string {
+  return `rentsmart_browse_records_${cityCode}_${platform}`;
+}
+
+export async function getBrowseRecords(cityCode: string, platform: string): Promise<BrowseRecord[]> {
+  try {
+    const data = await AsyncStorage.getItem(browseRecordsKey(cityCode, platform));
+    return data ? JSON.parse(data) : [];
+  } catch { return []; }
+}
+
+export async function addBrowseRecord(
+  cityCode: string,
+  platform: string,
+  record: Omit<BrowseRecord, 'recordedAt'> & { recordedAt?: string },
+): Promise<BrowseRecord[]> {
+  const list = await getBrowseRecords(cityCode, platform);
+  const key = `${record.platform}-${record.page}`;
+  const filtered = list.filter(r => `${r.platform}-${r.page}` !== key);
+  const entry: BrowseRecord = {
+    ...record,
+    recordedAt: record.recordedAt || new Date().toISOString(),
+  };
+  const updated = [entry, ...filtered].slice(0, 50);
+  await AsyncStorage.setItem(browseRecordsKey(cityCode, platform), JSON.stringify(updated));
+  return updated;
+}
+
+export async function markBrowseRecordProcessed(
+  cityCode: string,
+  platform: string,
+  page: number,
+  listingCount?: number,
+): Promise<void> {
+  const list = await getBrowseRecords(cityCode, platform);
+  const updated = list.map(r =>
+    r.platform === platform && r.page === page
+      ? { ...r, processed: true, listingCount: listingCount ?? r.listingCount }
+      : r,
+  );
+  await AsyncStorage.setItem(browseRecordsKey(cityCode, platform), JSON.stringify(updated));
+}
+
+export async function clearBrowseRecords(cityCode: string, platform?: string): Promise<void> {
+  if (platform) {
+    await AsyncStorage.removeItem(browseRecordsKey(cityCode, platform));
+    return;
+  }
+  for (const p of ['anjuke', 'beike']) {
+    await AsyncStorage.removeItem(browseRecordsKey(cityCode, p));
+  }
+}
+
+// ── 贝壳 Cookie 管理 ──────────────────────────────────────────
+/**
+ * 保存贝壳 Cookie（从登录 WebView 中提取）
+ * Cookie 格式：key1=value1; key2=value2; ...
+ */
+export async function saveBeikeCookie(cookieString: string): Promise<void> {
+  await AsyncStorage.setItem(KEYS.BEIKE_COOKIE, cookieString);
+  // 同时更新登录状态
+  await setPlatformLoggedIn('beike', true);
+}
+
+/**
+ * 获取保存的贝壳 Cookie
+ * @returns Cookie 字符串，如果没有则返回 null
+ */
+export async function getBeikeCookie(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(KEYS.BEIKE_COOKIE);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 清除贝壳 Cookie（登出或 Cookie 失效时调用）
+ */
+export async function clearBeikeCookie(): Promise<void> {
+  await AsyncStorage.removeItem(KEYS.BEIKE_COOKIE);
+  await setPlatformLoggedIn('beike', false);
+}
+
+/**
+ * 检查贝壳 Cookie 是否存在且有效
+ * 注意：这只检查 Cookie 是否存在，不验证是否过期
+ */
+export async function hasValidBeikeCookie(): Promise<boolean> {
+  const cookie = await getBeikeCookie();
+  return !!cookie && cookie.length > 0;
+}
+
+// ── 链家 Cookie 管理 ──────────────────────────────────────────
+export async function saveLianjiaCookie(cookieString: string): Promise<void> {
+  await AsyncStorage.setItem(KEYS.LIANJIA_COOKIE, cookieString);
+  await setPlatformLoggedIn('lianjia', true);
+}
+
+export async function getLianjiaCookie(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(KEYS.LIANJIA_COOKIE);
+  } catch {
+    return null;
+  }
+}
+
+export async function clearLianjiaCookie(): Promise<void> {
+  await AsyncStorage.removeItem(KEYS.LIANJIA_COOKIE);
+  await setPlatformLoggedIn('lianjia', false);
+}
+
+// ── 小红书 Cookie 管理 ──────────────────────────────────────────
+export async function saveXiaohongshuCookie(cookieString: string): Promise<void> {
+  await AsyncStorage.setItem(KEYS.XIAOHONGSHU_COOKIE, cookieString);
+  await setPlatformLoggedIn('xiaohongshu', true);
+}
+
+export async function getXiaohongshuCookie(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(KEYS.XIAOHONGSHU_COOKIE);
+  } catch {
+    return null;
+  }
+}
+
+export async function clearXiaohongshuCookie(): Promise<void> {
+  await AsyncStorage.removeItem(KEYS.XIAOHONGSHU_COOKIE);
+  await setPlatformLoggedIn('xiaohongshu', false);
+}
+
+// ── 多收藏夹管理 ────────────────────────────────────────────────
+
+/** 获取所有收藏夹 */
+export async function getFavoriteFolders(): Promise<FavoriteFolder[]> {
+  try {
+    const data = await AsyncStorage.getItem(KEYS.FAVORITE_FOLDERS);
+    return data ? JSON.parse(data) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 创建新收藏夹 */
+export async function createFavoriteFolder(name: string): Promise<FavoriteFolder> {
+  const folders = await getFavoriteFolders();
+  const newFolder: FavoriteFolder = {
+    id: `folder_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+    name,
+    createdAt: new Date().toISOString(),
+  };
+  const updated = [...folders, newFolder];
+  await AsyncStorage.setItem(KEYS.FAVORITE_FOLDERS, JSON.stringify(updated));
+  return newFolder;
+}
+
+/** 重命名收藏夹 */
+export async function renameFavoriteFolder(id: string, name: string): Promise<void> {
+  const folders = await getFavoriteFolders();
+  const updated = folders.map(f => f.id === id ? { ...f, name } : f);
+  await AsyncStorage.setItem(KEYS.FAVORITE_FOLDERS, JSON.stringify(updated));
+}
+
+/** 删除收藏夹（同时删除该收藏夹下的所有关联） */
+export async function deleteFavoriteFolder(id: string): Promise<void> {
+  const folders = await getFavoriteFolders();
+  const updated = folders.filter(f => f.id !== id);
+  await AsyncStorage.setItem(KEYS.FAVORITE_FOLDERS, JSON.stringify(updated));
+  
+  // 删除该收藏夹下的所有房源关联
+  const listings = await getFavoriteListings();
+  const updatedListings = listings.filter(l => l.folderId !== id);
+  await AsyncStorage.setItem(KEYS.FAVORITE_LISTINGS, JSON.stringify(updatedListings));
+  
+  // 更新统计
+  await updateFavoriteStats();
+}
+
+/** 获取所有收藏夹-房源关联 */
+async function getFavoriteListings(): Promise<FavoriteListing[]> {
+  try {
+    const data = await AsyncStorage.getItem(KEYS.FAVORITE_LISTINGS);
+    return data ? JSON.parse(data) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 添加房源到收藏夹 */
+export async function addListingToFolder(listing: Listing, folderId: string): Promise<void> {
+  const listings = await getFavoriteListings();
+  
+  // 检查是否已存在
+  const exists = listings.some(l => l.listingId === listing.id && l.folderId === folderId);
+  if (exists) return;
+  
+  const newEntry: FavoriteListing = {
+    listingId: listing.id,
+    folderId,
+    addedAt: new Date().toISOString(),
+  };
+  
+  const updated = [...listings, newEntry];
+  await AsyncStorage.setItem(KEYS.FAVORITE_LISTINGS, JSON.stringify(updated));
+  
+  // 同时保存房源数据到 history（确保可以查询到）
+  await upsertHistoryListings([listing]);
+  
+  // 更新统计
+  await updateFavoriteStats();
+  
+  // 检查是否达到阈值（每满5套触发一次）
+  const folderListings = updated.filter(l => l.folderId === folderId);
+  const count = folderListings.length;
+  console.log('[Folder] count:', count, 'folderId:', folderId);
+  
+  if (count % 5 === 0 && count > 0) {
+    const folders = await getFavoriteFolders();
+    const folder = folders.find(f => f.id === folderId);
+    if (folder) {
+      console.log('[Folder] Triggering FOLDER_THRESHOLD_REACHED event for:', folder.name);
+      emitAgentEvent('FOLDER_THRESHOLD_REACHED', {
+        folderId,
+        folderName: folder.name,
+        count,
+      });
+    }
+  }
+}
+
+/** 从收藏夹移除房源 */
+export async function removeListingFromFolder(listingId: string, folderId: string): Promise<void> {
+  const listings = await getFavoriteListings();
+  const updated = listings.filter(l => !(l.listingId === listingId && l.folderId === folderId));
+  await AsyncStorage.setItem(KEYS.FAVORITE_LISTINGS, JSON.stringify(updated));
+  await updateFavoriteStats();
+}
+
+/** 获取收藏夹中的所有房源 */
+export async function getFolderListings(folderId: string): Promise<Listing[]> {
+  const associations = await getFavoriteListings();
+  const listingIds = associations
+    .filter(a => a.folderId === folderId)
+    .map(a => a.listingId);
+  
+  // 从 history 中获取完整房源数据
+  const history = await getHistory();
+  return history.filter(l => listingIds.includes(l.id));
+}
+
+/** 获取房源所在的所有收藏夹ID */
+export async function getListingFolders(listingId: string): Promise<string[]> {
+  const listings = await getFavoriteListings();
+  return listings
+    .filter(l => l.listingId === listingId)
+    .map(l => l.folderId);
+}
+
+/** 更新收藏统计（使用统一的计数函数） */
+async function updateFavoriteStats(): Promise<void> {
+  const count = await getFavoritesCount();
+  await updateStats({ favorited: count });
+}
+
+/**
+ * 数据一致性检查和修复
+ * 确保统计数字与实际数据匹配
+ */
+export async function checkAndFixFavoriteConsistency(): Promise<{ fixed: boolean; details: string }> {
+  try {
+    const associations = await getFavoriteListings();
+    const history = await getHistory();
+    const historyIds = new Set(history.map(h => h.id));
+    
+    // 找出无效的关联（房源不在 history 中）
+    const invalidAssociations = associations.filter(a => !historyIds.has(a.listingId));
+    
+    if (invalidAssociations.length > 0) {
+      // 清理无效关联
+      const validAssociations = associations.filter(a => historyIds.has(a.listingId));
+      await AsyncStorage.setItem(KEYS.FAVORITE_LISTINGS, JSON.stringify(validAssociations));
+      await updateFavoriteStats();
+      
+      return {
+        fixed: true,
+        details: `清理了 ${invalidAssociations.length} 个无效收藏关联`
+      };
+    }
+    
+    return { fixed: false, details: '数据一致性正常' };
+  } catch (error) {
+    console.error('[Consistency Check] Error:', error);
+    return { fixed: false, details: '检查失败' };
+  }
+}
+
+/** 数据迁移：将旧收藏夹数据迁移到新的多收藏夹结构 */
+export async function migrateOldFavorites(): Promise<void> {
+  const folders = await getFavoriteFolders();
+  const associations = await getFavoriteListings();
+  
+  // 情况1：没有收藏夹，创建默认收藏夹
+  if (folders.length === 0) {
+    // 获取旧的收藏数据
+    try {
+      const oldData = await AsyncStorage.getItem(KEYS.FAVORITES);
+      const oldFavorites: Listing[] = oldData ? JSON.parse(oldData) : [];
+      
+      if (oldFavorites.length === 0) {
+        // 没有旧数据，只创建默认收藏夹
+        await createFavoriteFolder('默认收藏夹');
+        return;
+      }
+      
+      // 创建默认收藏夹并迁移数据
+      const defaultFolder = await createFavoriteFolder('默认收藏夹');
+      const newListings: FavoriteListing[] = oldFavorites.map(fav => ({
+        listingId: fav.id,
+        folderId: defaultFolder.id,
+        addedAt: new Date().toISOString(),
+      }));
+      
+      await AsyncStorage.setItem(KEYS.FAVORITE_LISTINGS, JSON.stringify(newListings));
+      await upsertHistoryListings(oldFavorites);
+      await updateFavoriteStats();
+      
+      console.log(`[Migration] Migrated ${oldFavorites.length} favorites to default folder`);
+    } catch (error) {
+      console.error('[Migration] Error migrating old favorites:', error);
+      // 即使迁移失败，也创建默认收藏夹
+      await createFavoriteFolder('默认收藏夹');
+    }
+    return;
+  }
+  
+  // 情况2：有收藏夹但关联表为空，尝试从旧数据恢复
+  if (associations.length === 0) {
+    try {
+      const oldData = await AsyncStorage.getItem(KEYS.FAVORITES);
+      const oldFavorites: Listing[] = oldData ? JSON.parse(oldData) : [];
+      
+      if (oldFavorites.length > 0) {
+        // 使用第一个收藏夹作为默认目标
+        const targetFolder = folders[0];
+        const newListings: FavoriteListing[] = oldFavorites.map(fav => ({
+          listingId: fav.id,
+          folderId: targetFolder.id,
+          addedAt: new Date().toISOString(),
+        }));
+        
+        await AsyncStorage.setItem(KEYS.FAVORITE_LISTINGS, JSON.stringify(newListings));
+        await upsertHistoryListings(oldFavorites);
+        await updateFavoriteStats();
+        
+        console.log(`[Migration] Recovered ${oldFavorites.length} favorites to folder: ${targetFolder.name}`);
+      }
+    } catch (error) {
+      console.error('[Migration] Error recovering favorites:', error);
+    }
+  }
+  
+  // 情况3：清理无效的关联（房源不在 history 中）
+  if (associations.length > 0) {
+    const history = await getHistory();
+    const historyIds = new Set(history.map(h => h.id));
+    const validAssociations = associations.filter(a => historyIds.has(a.listingId));
+    
+    if (validAssociations.length !== associations.length) {
+      await AsyncStorage.setItem(KEYS.FAVORITE_LISTINGS, JSON.stringify(validAssociations));
+      await updateFavoriteStats();
+      console.log(`[Migration] Cleaned ${associations.length - validAssociations.length} invalid associations`);
+    }
+  }
+}
+
+// ── 收藏夹提示管理 ────────────────────────────────────────────
+
+/** 检查是否已显示过收藏夹提示 */
+export async function hasFolderTipShown(): Promise<boolean> {
+  try {
+    const value = await AsyncStorage.getItem(KEYS.FOLDER_TIP_SHOWN);
+    return value === 'true';
+  } catch {
+    return false;
+  }
+}
+
+/** 标记收藏夹提示已显示 */
+export async function markFolderTipShown(): Promise<void> {
+  await AsyncStorage.setItem(KEYS.FOLDER_TIP_SHOWN, 'true');
+}
+
+// ── 小红书房源评价管理 ────────────────────────────────────────
+
+/** 获取所有小红书评价记录 */
+export async function getXHSReviews(): Promise<XHSReviewRecord[]> {
+  try {
+    const data = await AsyncStorage.getItem(KEYS.XHS_REVIEWS);
+    return data ? JSON.parse(data) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 根据房源ID获取小红书评价 */
+export async function getXHSReviewByListingId(listingId: string): Promise<XHSReviewRecord | null> {
+  const reviews = await getXHSReviews();
+  return reviews.find(r => r.listingId === listingId) || null;
+}
+
+/** 保存小红书评价记录 */
+export async function saveXHSReview(record: XHSReviewRecord): Promise<void> {
+  const current = await getXHSReviews();
+  // 移除同一房源的旧记录
+  const filtered = current.filter(item => item.listingId !== record.listingId);
+  // 最多保留100条记录
+  const updated = [record, ...filtered].slice(0, 100);
+  await AsyncStorage.setItem(KEYS.XHS_REVIEWS, JSON.stringify(updated));
+}
+
+/** 删除指定房源的小红书评价 */
+export async function deleteXHSReview(listingId: string): Promise<void> {
+  const current = await getXHSReviews();
+  const updated = current.filter(item => item.listingId !== listingId);
+  await AsyncStorage.setItem(KEYS.XHS_REVIEWS, JSON.stringify(updated));
+}
+
+/** 清空所有小红书评价记录 */
+export async function clearXHSReviews(): Promise<void> {
+  await AsyncStorage.setItem(KEYS.XHS_REVIEWS, JSON.stringify([]));
 }

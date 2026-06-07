@@ -1,6 +1,6 @@
 // ── AI 模型调用 ──────────────────────────────────────────────
 
-import { getApiConfig, type UserPrefs, type Listing } from './storage';
+import { getApiConfig, type Listing, type UserPrefs } from './storage';
 
 export type ChatMessage = {
   role: 'user' | 'assistant' | 'system';
@@ -48,7 +48,6 @@ export async function scoreListingWithAI(
     
     // 根据模型选择不同的 API
     if (config.textModel === 'deepseek' || !config.apiKey) {
-      // 默认使用 DeepSeek（项目已内置默认 Key）
       return await callDeepSeek(prompt, deepSeekKey);
     } else {
       // 其他模型暂不实现，返回 null
@@ -121,7 +120,7 @@ export async function generateCompareReport(
   const config = await getApiConfig();
   const deepSeekKey = resolveDeepSeekKey(config);
   if (!deepSeekKey) {
-    throw new Error('当前未找到可用 Key。默认已内置，如你曾手动清空，请在「我的」页重新配置。');
+    throw new Error('未配置 DeepSeek API Key，请前往「我的」页面配置。');
   }
 
   const prompt = `请针对以下${listings.length}套房源撰写**正式对比报告**（书面体，非对话）。
@@ -292,6 +291,7 @@ export async function deepAnalyzeListing(
   images?: string[],
   pageContent?: string,
   pageExtras?: PageExtractExtras,
+  imageAnalysisText?: string,
 ): Promise<string> {
   const config = await getApiConfig();
   
@@ -315,34 +315,74 @@ export async function deepAnalyzeListing(
   }
   const visionImages = mergedVision.length > 0 ? mergedVision : undefined;
   
-  const prompt = buildDeepAnalysisPrompt(listing, userPrefs, pageContent, pageExtras);
+  const prompt = buildDeepAnalysisPrompt(listing, userPrefs, pageContent, pageExtras, imageAnalysisText);
+  
+  console.log('[DeepAnalysis] 使用模型:', model);
+  console.log('[DeepAnalysis] prompt 前500字:', prompt.slice(0, 500));
+  
+  // 检查是否有真实的实拍图（detailImages）
+  const detailImages = listing.detailImages || [];
+  const hasRealImages = detailImages && detailImages.length > 0 && 
+    detailImages.some(img => typeof img === 'string' && img.startsWith('http'));
+  
+  console.log('[DeepAnalysis] 实拍图检查:', {
+    detailImagesCount: detailImages.length,
+    hasRealImages,
+    mergedVisionCount: mergedVision.length,
+    model,
+  });
+  
+  // 如果没有真实实拍图，强制使用 DeepSeek 文本模型
+  let effectiveModel = model;
+  if (!hasRealImages && model === 'glm4v') {
+    effectiveModel = 'deepseek';
+    console.log('[DeepAnalysis] 无实拍图，强制从 glm4v 降级到 deepseek-chat');
+  }
   
   // 根据模型选择接口
-  switch (model) {
+  let response: string;
+  switch (effectiveModel) {
+    case 'deepseek':
+      if (!deepSeekKey) throw new Error('未配置 DeepSeek API Key');
+      console.log('[DeepAnalysis] 调用 callDeepSeekTextOnly (纯文本模式)');
+      response = await callDeepSeekTextOnly(prompt, deepSeekKey);
+      break;
     case 'glm4v':
       if (!glmKey) throw new Error('未配置 GLM API Key');
-      return await callGLMVision(prompt, glmKey, visionImages);
+      response = await callGLMVision(prompt, glmKey, visionImages);
+      break;
     case 'openai':
       if (!config.apiKey) throw new Error('未配置通用 API Key');
-      return await callOpenAIVision(prompt, config.apiKey, visionImages, 'https://api.openai.com/v1');
+      response = await callOpenAIVision(prompt, config.apiKey, visionImages, 'https://api.openai.com/v1');
+      break;
     case 'qwen':
       if (!config.apiKey) throw new Error('未配置通用 API Key');
-      return await callOpenAIVision(prompt, config.apiKey, visionImages, 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen-vl-max');
+      response = await callOpenAIVision(prompt, config.apiKey, visionImages, 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen-vl-max');
+      break;
     case 'claude':
       if (!config.apiKey) throw new Error('未配置通用 API Key');
-      return await callClaudeVision(prompt, config.apiKey, visionImages);
+      response = await callClaudeVision(prompt, config.apiKey, visionImages);
+      break;
     case 'gemini':
       if (!config.apiKey) throw new Error('未配置通用 API Key');
-      return await callGeminiVision(prompt, config.apiKey, visionImages);
+      response = await callGeminiVision(prompt, config.apiKey, visionImages);
+      break;
     case 'custom':
       if (!config.apiBase) throw new Error('自定义模型需要填写 API Base URL');
       if (!config.apiKey) throw new Error('未配置通用 API Key');
-      return await callOpenAIVision(prompt, config.apiKey, visionImages, config.apiBase);
+      response = await callOpenAIVision(prompt, config.apiKey, visionImages, config.apiBase);
+      break;
     default:
       // fallback：DeepSeek 文本分析（无图）
       if (!deepSeekKey) throw new Error('未配置 DeepSeek API Key');
-      return await callDeepSeekDeep(prompt, deepSeekKey);
+      response = await callDeepSeekDeep(prompt, deepSeekKey);
+      break;
   }
+  
+  console.log('[DeepAnalysis] response 前1000字:', response.slice(0, 1000));
+  console.log('[DeepAnalysis] response 总长度:', response.length);
+  
+  return response;
 }
 
 // ── 构建精筛提示词 ────────────────────────────────────────────
@@ -351,8 +391,13 @@ function buildDeepAnalysisPrompt(
   prefs: UserPrefs,
   pageContent?: string,
   pageExtras?: PageExtractExtras,
+  imageAnalysisText?: string,
 ): string {
   const pageText = typeof pageContent === 'string' ? pageContent : '';
+  const cachedDetail = (listing.detailDescription || '').trim();
+  const effectivePageText = pageText.trim().length > 50
+    ? pageText
+    : (cachedDetail.length > 50 ? cachedDetail : pageText);
   const fac = (pageExtras?.facilities || []).filter(Boolean);
   const extraLines: string[] = [];
   if (fac.length > 0) {
@@ -362,15 +407,17 @@ function buildDeepAnalysisPrompt(
     extraLines.push('【配图】已尝试将页面内部分图片随多模态请求一并提交；若为纯文本通道请以上方页面正文为准。');
   }
   const extrasBlock = extraLines.length > 0 ? `\n${extraLines.join('\n')}\n` : '';
+  const imageBlock = imageAnalysisText ? `\n【GLM-4V 实拍图分析报告】\n${imageAnalysisText}\n` : '';
 
-  const pageSection = pageText.trim().length > 50
-    ? `${extrasBlock}\n【房源原始页面内容（从平台实际抓取，优先以此为准）】\n${pageText.trim().slice(0, 4000)}\n`
+  const pageSection = effectivePageText.trim().length > 50
+    ? `${extrasBlock}${imageBlock}\n【房源原始页面内容（从平台实际抓取，优先以此为准）】\n${effectivePageText.trim().slice(0, 4000)}\n`
     : extrasBlock.trim().length > 0
       ? `${extrasBlock}\n`
       : '';
 
-  return `你是专业的租房顾问，请对以下房源进行深度分析。${pageSection}
-【结构化房源信息】
+  return `你是专业的租房顾问，请对以下房源进行深度分析。
+
+房源信息：
 标题：${listing.title}
 位置：${listing.district} · ${listing.community}
 户型：${listing.roomType}　面积：${listing.area}　楼层：${listing.floor}
@@ -384,24 +431,34 @@ function buildDeepAnalysisPrompt(
 近地铁：${prefs.needSubway ? '要' : '不限'}
 可养宠：${prefs.needPets ? '要' : '不限'}
 其他要求：${prefs.otherReqs || '无'}
+${pageSection}${imageBlock ? `\n${imageBlock}` : ''}
 
-请从以下维度深度分析，识别隐藏风险和常见话术陷阱，并以 JSON 格式返回：
+请按以下格式输出分析报告（使用 Markdown）：
 
-{
-  "score": 8.2,
-  "summary": "综合评价一句话（30字内）",
-  "pros": ["优点1", "优点2", "优点3"],
-  "cons": ["缺点1", "缺点2"],
-  "risks": ["风险/话术识别1（如：'精装修'可能是旧房翻新)", "风险2"],
-  "suggestion": "针对用户需求的具体建议（50字内）"
-}
+## 综合评分：X.X / 10
 
-注意：
-- 若提供了原始页面内容，**优先根据真实页面**分析，而非依赖结构化字段
-- risks 要重点识别租房常见话术（如"随时看房"暗示空置已久、"精装修"可能墙壁遮丑等）
-- 要根据用户的通勤地址和预算给出个性化建议
-- 若提供了图片，要分析图片中的细节（采光、装修新旧、家具状况等）
-- 输出为**精筛决策报告**体：summary / suggestion 须体现是否倾向推荐承租及**核心理由**，避免仅复述【结构化房源信息】中的字段；不要用聊天式「好的」等开头。`;
+### 评分依据
+从价格合理性、地理位置、房屋条件、配套设施4个维度说明评分理由，每点1-2句话。
+
+### ✅ 优点
+- 列出3-5个具体优点，结合房源数据说明
+
+### ⚠️ 缺点与风险
+- 列出2-4个具体缺点或风险点，给出建议
+
+### 💰 价格分析
+结合周边行情，判断价格是否合理，是否有议价空间。
+
+### 🏠 居住建议
+适合什么类型的租客，有什么特别需要注意的事项。
+
+要求：
+- 分析要具体，引用房源中的实际数据（价格、面积、楼层等）
+- 不要泛泛而谈，每个观点都要有依据
+- 如果没有实拍图，在报告开头注明"本次分析基于文字信息，建议实地看房确认"
+- 若提供了图片分析报告，必须以图片分析为客观依据来评估采光、装修新旧、设施状况
+- 若提供了原始页面内容，优先根据真实页面分析
+- 识别租房常见话术陷阱（如"随时看房"暗示空置已久、"精装修"可能墙壁遮丑等）`;
 }
 
 // ── 聊天助手调用 ──────────────────────────────────────────────
@@ -411,8 +468,8 @@ export async function chatWithAssistant(
 ): Promise<string> {
   const config = await getApiConfig();
   const deepSeekKey = resolveDeepSeekKey(config);
-  if (!deepSeekKey && config.textModel !== 'deepseek') {
-    throw new Error('当前未找到可用 Key。默认已内置，如你曾手动清空，请前往「我的」页面配置。');
+  if (!deepSeekKey) {
+    throw new Error('未配置 DeepSeek API Key，请前往「我的」页面配置。');
   }
 
   const systemPrompt = `你是 RentSmart AI，一个专业的租房顾问。
@@ -629,8 +686,60 @@ export async function extractListingFromPosterImage(imageDataUrl: string): Promi
 }
 
 
+// GLM-4-Flash 纯文本调用（导出供其他模块使用）
+export async function callGLM(
+  prompt: string,
+  opts?: { temperature?: number; maxTokens?: number }
+): Promise<string> {
+  const config = await getApiConfig();
+  const apiKey = resolveGLMKey(config);
+  
+  if (!apiKey) {
+    throw new Error('未配置 GLM API Key');
+  }
+  
+  try {
+    const response = await fetch(`${GLM_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: GLM_MODEL,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        temperature: opts?.temperature ?? 0.7,
+        max_tokens: opts?.maxTokens ?? 2000,
+      }),
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[GLM] API Error:', response.status, errorText);
+      throw new Error(`GLM API 调用失败: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    
+    if (!content) {
+      throw new Error('GLM 返回内容为空');
+    }
+    
+    return content;
+  } catch (error) {
+    console.error('[GLM] Error:', error);
+    throw error;
+  }
+}
+
 // GLM-4V-Flash（智谱）
-async function callGLMVision(
+export async function callGLMVision(
   prompt: string,
   apiKey: string,
   images?: string[],
@@ -641,15 +750,23 @@ async function callGLMVision(
   if (images && images.length > 0) {
     const content: any[] = [{ type: 'text', text: prompt }];
     images.slice(0, 4).forEach(img => {
-      // 智谱 glm-4v（非 flash）支持 base64，但不要 data URL 前缀
-      let base64 = img;
-      if (img.startsWith('data:')) {
-        const match = img.match(/^data:image\/[^;]+;base64,(.+)$/);
-        if (match) {
-          base64 = match[1];
-        }
+      // ★ 修复：GLM-4V 需要完整的 data URL 格式或 HTTP(S) URL
+      let imageUrl = img;
+      
+      // 如果是 HTTP(S) URL，直接使用
+      if (img.startsWith('http://') || img.startsWith('https://')) {
+        imageUrl = img;
       }
-      content.push({ type: 'image_url', image_url: { url: base64 } });
+      // 如果已经是完整的 data URL，直接使用
+      else if (img.startsWith('data:image/')) {
+        imageUrl = img;
+      }
+      // 如果是纯 base64，添加 data URL 前缀
+      else {
+        imageUrl = `data:image/jpeg;base64,${img}`;
+      }
+      
+      content.push({ type: 'image_url', image_url: { url: imageUrl } });
     });
     messages.push({ role: 'user', content });
   } else {
@@ -669,6 +786,16 @@ async function callGLMVision(
 
   const firstMsg = messages[0];
   const contentType = Array.isArray(firstMsg?.content) ? 'array' : typeof firstMsg?.content;
+  
+  // 增强日志：记录图片格式信息
+  if (images && images.length > 0) {
+    console.log('[GLM] 图片信息:', images.map((img, idx) => ({
+      index: idx,
+      type: img.startsWith('http') ? 'URL' : img.startsWith('data:') ? 'DataURL' : 'Base64',
+      prefix: img.substring(0, 50),
+      length: img.length,
+    })));
+  }
   
   console.log('[GLM] 请求信息:', {
     model: requestBody.model,
@@ -692,15 +819,37 @@ async function callGLMVision(
   
   if (!res.ok) {
     const errorText = await res.text();
+    
+    // 尝试解析错误响应
+    let errorDetail = errorText;
+    try {
+      const errorJson = JSON.parse(errorText);
+      errorDetail = JSON.stringify(errorJson, null, 2);
+      
+      // 特别处理图片格式错误
+      if (errorJson.error?.code === '1210' || errorJson.error?.code === '12210') {
+        console.error('[GLM] 图片格式错误！请检查图片数据格式');
+        console.error('[GLM] 图片数据示例:', images?.map(img => img.substring(0, 100)));
+      }
+    } catch {
+      // 如果不是 JSON，使用原始文本
+    }
+    
     console.error('[GLM] API 错误响应:', {
       status: res.status,
       statusText: res.statusText,
-      body: errorText.slice(0, 500),
+      body: errorDetail.slice(0, 500),
     });
-    throw new Error(`GLM API 错误 ${res.status}: ${errorText.slice(0, 200)}`);
+    
+    throw new Error(`GLM API 错误 ${res.status}: ${errorDetail.slice(0, 200)}`);
   }
+  
   const data = await res.json();
-  return data.choices?.[0]?.message?.content || '{}';
+  const content = data.choices?.[0]?.message?.content || '{}';
+  
+  console.log('[GLM] 响应成功，内容长度:', content.length);
+  
+  return content;
 }
 
 // OpenAI 兼容接口（GPT-4o / 千问 / 自定义）
@@ -800,9 +949,203 @@ async function callGeminiVision(
   return data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
 }
 
-// DeepSeek 文本版精筛（无图降级）
+// ── 砍价话术 ─────────────────────────────────────────────────
+export type BargainCategory = 'time' | 'price' | 'problem' | 'urgency' | 'condition';
+
+export type BargainScript = {
+  category: BargainCategory;
+  title: string;
+  script: string;
+  tip?: string;
+};
+
+const BARGAIN_CATEGORY_LABELS: Record<BargainCategory, string> = {
+  time: '时间类',
+  price: '价格类',
+  problem: '问题类',
+  urgency: '时效类',
+  condition: '条件类',
+};
+
+export function getBargainCategoryLabel(cat: BargainCategory): string {
+  return BARGAIN_CATEGORY_LABELS[cat] ?? cat;
+}
+
+/**
+ * 用 GLM-4V 分析房源实拍图，生成精筛可用的结构化图文报告
+ */
+export async function summarizeListingImagesForDeepAnalysis(
+  listing: Listing,
+  imageUrls: string[],
+): Promise<string> {
+  const config = await getApiConfig();
+  const glmKey = resolveGLMKey(config);
+  const urls = imageUrls.filter(u => /^https?:\/\//i.test(String(u))).slice(0, 4);
+  if (!glmKey || urls.length === 0) return '';
+
+  const prompt = `你是专业租房评估师。以下是「${listing.community}」${listing.roomType} 出租房源的实拍图（${urls.length} 张）。
+请以结构化文本输出（用于精筛报告），包含：
+1. 亮点：图片中可见的显著优势（采光好、装修新、空间利用等）
+2. 缺点：图片中可见的问题（墙壁瑕疵、管道老化、拥挤等）
+3. 风险：可能隐含的问题（如光线异常暗示朝向差、新粉刷可能遮丑）
+4. 与描述一致性：参考文字描述「${listing.detailDescription ? listing.detailDescription.slice(0, 300) : (listing.title || '无')}」，评估图片是否与描述匹配
+每段15-40字，总计不超过150字。只描述图中可见内容，不编造。`;
+
+  try {
+    return (await callGLMVision(prompt, glmKey, urls, { temperature: 0.2, maxTokens: 500 })).trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 用 GLM-4V 分析房源实拍图，生成砍价可用的图文摘要
+ */
+export async function summarizeListingImagesForBargain(
+  listing: Listing,
+  imageUrls: string[],
+): Promise<string> {
+  const config = await getApiConfig();
+  const glmKey = resolveGLMKey(config);
+  const urls = imageUrls.filter(u => /^https?:\/\//i.test(String(u))).slice(0, 4);
+  if (!glmKey || urls.length === 0) return '';
+
+  const prompt = `你是租房顾问。以下是「${listing.community}」${listing.roomType} 出租房源的实拍图（${urls.length} 张）。
+请简要列出从图片可见的亮点与潜在问题（装修新旧、采光、整洁度、设施状况等），200 字以内，供生成砍价话术参考。不要编造图片中看不到的内容。`;
+
+  try {
+    return (await callGLMVision(prompt, glmKey, urls, { temperature: 0.25, maxTokens: 450 })).trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 根据房源信息，用 DeepSeek 生成 5 类砍价话术（每类 1 条）。
+ * 若有详情图且配置了 GLM Key，会先进行图片分析。
+ */
+export async function generateBargainScripts(
+  listing: Listing,
+  prefs: UserPrefs,
+  onProgress?: (hint: string) => void,
+): Promise<BargainScript[]> {
+  const config = await getApiConfig();
+  const deepSeekKey = resolveDeepSeekKey(config);
+  if (!deepSeekKey) {
+    throw new Error('未找到可用 DeepSeek Key，请在「我的」页面配置');
+  }
+
+  // 优先使用真实挂牌天数提示，次选首次抓取估算
+  const listedDaysText = listing.listedDaysHint
+    || (listing.scrapedAt
+      ? `约 ${Math.max(1, Math.floor((Date.now() - new Date(listing.scrapedAt).getTime()) / 86400000))} 天前首次抓取（非真实挂牌时长，仅供参考）`
+      : '未知');
+
+  // 整合设施信息（listing.facilities 优先，无则尝试从 tags 补充）
+  const facilityList = (listing.facilities && listing.facilities.length > 0)
+    ? listing.facilities
+    : listing.tags.filter(t => /空调|冰箱|洗衣机|热水器|燃气|暖气|电梯|宽带|衣柜|沙发|阳台/.test(t));
+
+  let imageVisionSummary = '';
+  const detailImages = (listing.detailImages || []).filter(u => /^https?:\/\//i.test(String(u)));
+  if (detailImages.length > 0) {
+    onProgress?.('正在分析图片…');
+    imageVisionSummary = await summarizeListingImagesForBargain(listing, detailImages);
+  }
+
+  onProgress?.('正在生成话术…');
+
+  const prompt = `你是一位经验丰富的租房老手，帮朋友出主意怎么跟房东谈价。请根据以下房源信息，生成 5 条**接地气、有人味**的砍价话术，每类一条。
+
+【房源基本信息】
+标题：${listing.title}
+小区：${listing.community}（${listing.district}）
+户型面积：${listing.roomType} / ${listing.area}
+楼层：${listing.floor || '未知'}
+挂牌价：${listing.price} 元/月
+标签：${listing.tags.join('、') || '无'}
+已识别设施：${facilityList.length > 0 ? facilityList.join('、') : '未获取'}
+AI 初评：${listing.aiComment || '无'}
+挂牌时长参考：${listedDaysText}
+${detailImages.length > 0 ? `实拍图数量：${detailImages.length} 张` : ''}
+${listing.detailDescription
+  ? `\n【详情页正文摘要（前 800 字）】\n${listing.detailDescription.slice(0, 800)}`
+  : ''}
+${imageVisionSummary ? `\n【实拍图 AI 分析（GLM-4V）】\n${imageVisionSummary}` : ''}
+
+【租客背景】
+预算：${prefs.budgetMin || '不限'} - ${prefs.budgetMax || '不限'} 元/月
+通勤地址：${prefs.commuteAddr || '未设置'}
+
+请严格以 JSON 数组格式返回，包含 5 个对象，category 分别为 time/price/problem/urgency/condition：
+[
+  { "category": "time", "title": "时间类", "script": "话术内容（第一人称，自然口吻）", "tip": "使用时机提示（可选）" },
+  { "category": "price", "title": "价格类", "script": "...", "tip": "..." },
+  { "category": "problem", "title": "问题类", "script": "...", "tip": "..." },
+  { "category": "urgency", "title": "时效类", "script": "...", "tip": "..." },
+  { "category": "condition", "title": "条件类", "script": "...", "tip": "..." }
+]
+
+要求：
+- 话术要结合该房源的真实字段（价格、小区、户型、设施、详情），不要泛泛而谈
+- 若有详情正文或图片分析，优先利用其中的具体信息来找砍价点
+- **语气要自然、真诚、接地气**，像真实租客跟房东聊天的口吻，可以适当使用"这个""有点""感觉""其实"等自然表达
+- 避免过于正式的书面语，不要像商务谈判或官方文件
+- 可以委婉表达顾虑，但要保持礼貌和诚意，不要咄咄逼人
+- 每条话术要有具体理由支撑，不要空洞套话
+- script 每条 50–90 字
+- 只返回 JSON 数组，不要其他文字`;
+
+  const res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${deepSeekKey}`,
+    },
+    body: JSON.stringify({
+      model: DEEPSEEK_MODEL,
+      messages: [
+        { role: 'system', content: '你是经验丰富的租房老手，帮朋友出主意怎么跟房东谈价。只输出纯 JSON 数组，不要 markdown 围栏。话术要自然、真诚、接地气，像真实租客跟房东聊天的口吻。' },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.6,
+      max_tokens: 1200,
+    }),
+  });
+
+  if (!res.ok) throw new Error(`砍价话术生成失败：${res.status}`);
+  const data = await res.json();
+  const content: string = data.choices?.[0]?.message?.content || '[]';
+
+  const cleaned = content.replace(/```json/gi, '').replace(/```/g, '').trim();
+  const arrMatch = cleaned.match(/\[[\s\S]*\]/);
+  if (!arrMatch) throw new Error('AI 返回格式异常，请重试');
+
+  let parsed: BargainScript[];
+  try {
+    parsed = JSON.parse(arrMatch[0]) as BargainScript[];
+  } catch {
+    throw new Error('解析砍价话术失败，请重试');
+  }
+
+  const validCategories: BargainCategory[] = ['time', 'price', 'problem', 'urgency', 'condition'];
+  return parsed.filter(
+    (s) => s && typeof s.script === 'string' && validCategories.includes(s.category as BargainCategory),
+  );
+}
+
+// DeepSeek 文本版精筛（无图降级）- 保留旧函数名以兼容其他调用
 async function callDeepSeekDeep(prompt: string, apiKey: string): Promise<string> {
-  if (!apiKey) throw new Error('当前未找到可用 Key（默认已内置，可能被手动清空）');
+  return await callDeepSeekTextOnly(prompt, apiKey);
+}
+
+// DeepSeek 纯文本模型调用（精筛专用）
+async function callDeepSeekTextOnly(prompt: string, apiKey: string): Promise<string> {
+  if (!apiKey) throw new Error('未配置 DeepSeek API Key，请前往「我的」页面配置。');
+  
+  console.log('[DeepSeekTextOnly] 开始调用 deepseek-chat');
+  console.log('[DeepSeekTextOnly] API Base:', DEEPSEEK_BASE);
+  console.log('[DeepSeekTextOnly] Model:', DEEPSEEK_MODEL);
   
   const res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
     method: 'POST',
@@ -813,15 +1156,27 @@ async function callDeepSeekDeep(prompt: string, apiKey: string): Promise<string>
     body: JSON.stringify({
       model: DEEPSEEK_MODEL,
       messages: [
-        { role: 'system', content: '你是专业租房顾问，擅长识别租房陷阱和评估房源。回复必须是纯 JSON 格式。' },
+        { role: 'system', content: '你是专业租房顾问，擅长识别租房陷阱和评估房源。请以 Markdown 格式输出详细分析报告。' },
         { role: 'user', content: prompt },
       ],
       temperature: 0.7,
-      max_tokens: 1000,
+      max_tokens: 2000,
     }),
   });
   
-  if (!res.ok) throw new Error(`DeepSeek API 错误: ${res.status}`);
+  console.log('[DeepSeekTextOnly] Response status:', res.status);
+  
+  if (!res.ok) {
+    const errorText = await res.text();
+    console.error('[DeepSeekTextOnly] API 错误:', errorText);
+    throw new Error(`DeepSeek API 错误: ${res.status}`);
+  }
+  
   const data = await res.json();
-  return data.choices?.[0]?.message?.content || '{}';
+  const content = data.choices?.[0]?.message?.content || '# 分析报告\n\n生成失败，请重试。';
+  
+  console.log('[DeepSeekTextOnly] Response length:', content.length);
+  console.log('[DeepSeekTextOnly] Response preview:', content.slice(0, 200));
+  
+  return content;
 }

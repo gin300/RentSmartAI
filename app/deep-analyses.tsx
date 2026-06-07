@@ -1,7 +1,7 @@
-import { useCallback, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View, Platform } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
+import { Alert, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { clearDeepAnalysisRecords, getDeepAnalysisRecords, type DeepAnalysisRecord } from './lib/storage';
 
 export default function DeepAnalysesPage() {
@@ -63,9 +63,22 @@ export default function DeepAnalysesPage() {
                 精筛评分 {item.score?.toFixed ? item.score.toFixed(1) : item.score} · {new Date(item.createdAt).toLocaleString()}
               </Text>
               <Text style={s.summary} numberOfLines={3}>{item.summary || '暂无摘要'}</Text>
-              <TouchableOpacity style={s.detailBtn} onPress={() => router.push(`/listing/${item.listingId}`)}>
-                <Text style={s.detailBtnText}>查看房源详情</Text>
-              </TouchableOpacity>
+              
+              <View style={s.btnRow}>
+                <TouchableOpacity 
+                  style={s.detailBtn} 
+                  onPress={() => router.push(`/listing/${item.listingId}`)}
+                >
+                  <Text style={s.detailBtnText}>查看房源详情</Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity 
+                  style={s.xhsBtn} 
+                  onPress={() => router.push(`/listing/${item.listingId}?action=xhs`)}
+                >
+                  <Text style={s.xhsBtnText}>📖 小红书评价</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           ))}
           <View style={{ height: 24 }} />
@@ -112,8 +125,13 @@ const s = StyleSheet.create({
   title: { fontSize: 14, fontWeight: '700', color: '#222', lineHeight: 20 },
   meta: { fontSize: 12, color: '#666', marginTop: 6 },
   summary: { fontSize: 12, color: '#999', marginTop: 6, lineHeight: 18 },
-  detailBtn: {
+  btnRow: {
+    flexDirection: 'row',
+    gap: 8,
     marginTop: 10,
+  },
+  detailBtn: {
+    flex: 1,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#00ae66',
@@ -122,6 +140,16 @@ const s = StyleSheet.create({
     alignItems: 'center',
   },
   detailBtnText: { fontSize: 13, color: '#00ae66', fontWeight: '600' },
+  xhsBtn: {
+    flex: 1,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ff6b6b',
+    backgroundColor: '#fff5f5',
+    paddingVertical: 9,
+    alignItems: 'center',
+  },
+  xhsBtnText: { fontSize: 13, color: '#ff6b6b', fontWeight: '600' },
   emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 },
   emptyIcon: { fontSize: 40, marginBottom: 8 },
   emptyTitle: { fontSize: 15, fontWeight: '700', color: '#333' },

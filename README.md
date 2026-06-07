@@ -1,92 +1,133 @@
-# RentSmart AI · 智能租房助手
+<p align="center">
+  <img src="https://raw.githubusercontent.com/gin300/RentSmartAI/main/screenshots/home.jpg" width="160" />
+  &nbsp;&nbsp;
+  <img src="https://raw.githubusercontent.com/gin300/RentSmartAI/main/screenshots/chat.jpg" width="160" />
+  &nbsp;&nbsp;
+  <img src="https://raw.githubusercontent.com/gin300/RentSmartAI/main/screenshots/detail.jpg" width="160" />
+</p>
 
-用一句话概括：**把「刷平台、记条件、算通勤、怕踩坑」这些事，交给手机里的 AI 助手和你一起完成。**
+<h1 align="center">RentSmart AI</h1>
+<p align="center"><strong>智能租房助手 · 有坑必防</strong></p>
 
-本说明面向**产品展示与功能介绍**，便于快速了解这款应用能为你做什么；文末会简要说明背后采用的技术，便于理解能力边界。
+<p align="center">
+  <img src="https://img.shields.io/badge/React_Native-Expo-4630EB?style=flat&logo=expo&logoColor=white" />
+  <img src="https://img.shields.io/badge/AI-DeepSeek_|_GLM--4V-1A9B5C?style=flat" />
+  <img src="https://img.shields.io/badge/Map-高德地图_API-FF6A00?style=flat" />
+  <img src="https://img.shields.io/badge/RAG-法律知识库-0A5C33?style=flat" />
+</p>
+
+<p align="center">
+  📖 <a href="https://gin300.github.io/RentSmartAI/"><strong>查看完整产品文档 →</strong></a>
+</p>
 
 ---
 
-## 为什么需要它
+## 一句话介绍
 
-租房时常见困扰包括：信息太多筛不过来、价格和通勤难以一起权衡、中介话术和合同条款让人不放心、看房时不知道重点看哪里。
+把「刷平台、记条件、算通勤、怕踩坑」这些事，交给手机里的 AI 助手和你一起完成。
 
-RentSmart AI 把 **AI 初筛、对话找房、通勤测算、法律知识辅助、房源对比与深度报告** 放在同一款 App 里，让你少在几个 App 之间来回切换，把精力留给真正想住的那几套房。
+RentSmart AI 是一款用 AI 重构租房决策流程的移动端工具——从信息采集、智能筛选到风险预警，帮租房者把精力留给真正值得关注的那几套房。
 
 ---
 
-## 产品界面一览
+## 要解决的问题
+
+| 痛点 | 现状 |
+|:---|:---|
+| **信息过载** | 多平台来回切换，数百条房源靠手动翻页和记忆 |
+| **决策成本高** | 价格、通勤、户型无法一次对齐，对比全靠脑记 |
+| **踩坑风险** | 中介话术、合同陷阱、虚假房源，缺乏专业判断 |
+| **工具割裂** | 看房、算通勤、查法律分散在不同 App |
+
+---
+
+## 核心功能
+
+### 1. 多平台聚合 + AI 初筛
+
+一次搜索覆盖 **贝壳、安居客、链家** 三大平台，DeepSeek 自动评分与简评，不用一个个 App 去翻。
+
+### 2. 对话式 AI 找房助手
+
+用自然语言描述需求，助手会 **先确认理解是否一致，再检索匹配房源**。采用 Function Calling Agent 架构，可自主调度查房源、算通勤、搜法律等工具。
+
+### 3. 深度筛查与风险预警
+
+对重点关注的房源生成深度报告。GLM-4V 多模态模型辅助看图分析，检测话术陷阱与虚假信息，还能自动生成砍价话术。
+
+### 4. 房源对比 + 通勤计算
+
+最多 5 套候选房横向 PK，集成 **高德地图** 实时通勤规划，价格与距离不再分开看。
+
+### 5. RAG 法律知识库
+
+内置租房法律语料，端侧向量检索做语义匹配，大模型基于检索结果生成回答——**有据可依，而非空口编造**。
+
+### 6. 本地优先的数据策略
+
+所有数据存储在本机 AsyncStorage，无需注册账号，保护隐私，打开即用。
+
+---
+
+## 产品界面
 
 <table>
   <tr>
-    <td align="center"><img src="https://raw.githubusercontent.com/gin300/RentSmartAI/main/screenshots/home.jpg" width="200"/><br/>首页</td>
-    <td align="center"><img src="https://raw.githubusercontent.com/gin300/RentSmartAI/main/screenshots/search.jpg" width="200"/><br/>找房</td>
-    <td align="center"><img src="https://raw.githubusercontent.com/gin300/RentSmartAI/main/screenshots/detail.jpg" width="200"/><br/>房源详情</td>
+    <td align="center"><img src="https://raw.githubusercontent.com/gin300/RentSmartAI/main/screenshots/home.jpg" width="180"/><br/><sub>首页</sub></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/gin300/RentSmartAI/main/screenshots/search.jpg" width="180"/><br/><sub>找房</sub></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/gin300/RentSmartAI/main/screenshots/detail.jpg" width="180"/><br/><sub>房源详情</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="https://raw.githubusercontent.com/gin300/RentSmartAI/main/screenshots/chat.jpg" width="200"/><br/>AI 助手</td>
-    <td align="center"><img src="https://raw.githubusercontent.com/gin300/RentSmartAI/main/screenshots/compare.jpg" width="200"/><br/>房源对比</td>
-    <td align="center"><img src="https://raw.githubusercontent.com/gin300/RentSmartAI/main/screenshots/profile.jpg" width="200"/><br/>我的与设置</td>
+    <td align="center"><img src="https://raw.githubusercontent.com/gin300/RentSmartAI/main/screenshots/chat.jpg" width="180"/><br/><sub>AI 助手</sub></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/gin300/RentSmartAI/main/screenshots/compare.jpg" width="180"/><br/><sub>房源对比</sub></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/gin300/RentSmartAI/main/screenshots/profile.jpg" width="180"/><br/><sub>设置</sub></td>
   </tr>
 </table>
 
 ---
 
-## 你能用它做什么
+## 关键产品决策
 
-### 智能找房与偏好记忆
+> **为什么让 AI 先"对齐"再找房？**
+> 用户描述需求时往往模糊，直接检索容易返回不匹配的结果。让助手先复述需求并请用户确认，减少一轮无效交互。
 
-在 App 内打开常见租房平台页面，按引导扫描当前列表，系统会提取房源信息并给出 **AI 初筛评分与简短点评**。整租、合租、公寓等模式与常用筛选可与个人偏好联动，从详情返回列表时尽量保持你的筛选状态，减少重复操作。
+> **初筛 + 精筛的两层漏斗**
+> 免费的 DeepSeek 做批量评分（初筛），只有用户真正感兴趣的房源才调用多模态模型深度分析（精筛）。兼顾覆盖率和成本。
 
-### AI 对话助手（会先对齐再找房）
+> **法律知识为什么用 RAG？**
+> 租房法律涉及《民法典》具体条款，大模型直接回答容易编造细节。RAG 路径先检索条文再生成回答，确保有据可依。
 
-用自然语言说出预算、区域、户型等需求，助手会先 **和你确认理解是否一致**，得到你的明确确认后再去检索并展示房源卡片，降低「理解偏差」带来的无效结果。也支持上传分享海报识别房源、上传看房照片做场景分析；收藏达到一定条件时，可触发更综合的对比与建议（具体以 App 内行为为准）。
-
-### 通勤与时间
-
-可设置常去地点（如公司），在对比或详情相关流程中查看 **预估通勤距离与耗时**。默认按 **公交地铁等公共交通** 规划；若你更习惯驾车、步行或骑行，可在「我的」里切换规划方式，数据由 **高德地图 Web 服务** 的路线与地理编码能力支撑。地图选点时会尽量结合你已保存的工作地或城市信息，并在需要时用逆地理编码补全地址描述。
-
-### 房源对比
-
-将多套候选房放在一起横向对比，涵盖价格、户型、标签、通勤、AI 评分等维度，方便快速做决定。
-
-### 深度筛查报告
-
-对特别感兴趣的房源可生成 **深度分析报告**：除结构化信息外，还可结合页面内可提取的设施与图片线索（在合规与页面允许的前提下）做更细的风险与居住体验提示；精筛环节可使用 **视觉类大模型** 辅助阅读图片信息（需在设置中配置相应密钥）。
-
-### 租房法律与注意事项
-
-内置 **本地法律知识库**（如租赁相关常识、押金与合同类材料等），在对话中涉及租房权益、合同、押金等问题时，会先 **从知识库检索相关内容**，再结合大模型整理成 **条理清晰、带 Markdown 排版** 的说明，并强调以库内材料为依据，减少空口编造。助手界面也提供「租房避坑」「看房清单」「合同注意」「押金维权」等快捷入口，同样走「检索 + 归纳」的路径，便于快速查阅。
-
-### 数据都在你手机里
-
-浏览记录、收藏、对话与偏好等默认保存在本机（**AsyncStorage**），方便离线回顾与连续使用；涉及在线地图与 AI 的功能需网络与相应服务配置。
+> **Agent 架构而非固定流程**
+> 采用 Function Calling Agent，助手可自主决定调用哪个工具，让对话体验更自然灵活，也更容易扩展新能力。
 
 ---
 
-## 功能背后的技术（简要）
+## 技术选型
 
-| 能力方向 | 技术说明 |
-|---------|---------|
-| 跨端应用 | **React Native** 与 **Expo**，界面路由采用 **expo-router**。 |
-| 对话与工具调用 | **DeepSeek** 等大模型通过 **Function Calling（工具调用）** 驱动「查房源、算通勤、读用户上下文」等动作，形成可自主决策的助手流程。 |
-| 法律知识 | **RAG（检索增强生成）**：使用 **@xenova/transformers** 在端侧对查询与知识片段做向量化与语义检索，再由模型基于检索结果生成回答；法律类快捷问题同样走该路径。 |
-| 初筛与精筛 | 文本侧 **DeepSeek** 做房源初筛与对话；深度看图分析可选用 **智谱 GLM-4V** 等多模态接口（由用户在设置中填写）。 |
-| 地图与通勤 | **高德地图** REST 接口：地理编码、逆地理编码、公交/驾车/步行/骑行等路线规划。 |
-| 内嵌浏览 | **react-native-webview** 内嵌平台页面，配合脚本做可控范围内的信息提取（具体能力受页面结构影响）。 |
-| 展示与动效 | **react-native-markdown-display** 等组件用于助手与报告中的富文本展示；动效与手势由 Reanimated、Gesture Handler 等常见 RN 生态方案支持。 |
-
-以上技术组合的目标只有一个：**在保护你注意力的前提下，把租房决策所需的信息凑齐、说清楚。**
+| 方向 | 技术 |
+|:---|:---|
+| 跨端应用 | **React Native** + **Expo**，路由 expo-router |
+| 对话与工具调用 | **DeepSeek** Function Calling Agent |
+| 深度视觉分析 | **智谱 GLM-4V** 多模态模型 |
+| 法律知识 | **RAG**：@xenova/transformers 端侧向量化 + 语义检索 |
+| 地图与通勤 | **高德地图** REST API |
+| 平台抓取 | **react-native-webview** + 注入脚本 |
+| 数据存储 | **AsyncStorage** 本地优先 |
 
 ---
 
-## 使用上需要知道的事
+## 使用须知
 
-- 房源列表依赖你在 App 内对平台页面的扫描与抓取，**无法绕过各平台自身的展示规则与使用条款**；信息以当时页面为准。
-- 通勤与地图类功能依赖 **高德 Key**；AI 与视觉功能依赖你在「我的」中配置的 **API Key**，应用内可能提供便于体验的默认额度，以实际版本说明为准。
-- **AI 与知识库内容仅供学习与决策参考**，不构成法律意见或投资建议；签约、付款、看房请以平台规则、合同文本及主管部门或律师意见为准。
+- 房源数据依赖对平台页面的扫描，受各平台展示规则影响
+- AI 与地图功能需配置对应 API Key（应用内可配置）
+- **所有内容仅供学习与决策参考**，不构成法律意见
 
 ---
 
 ## 免责声明
 
-RentSmart AI 不隶属于安居客、贝壳找房或其他房产平台，为独立工具。请遵守各平台用户协议与当地法律法规。因使用本工具产生的任何纠纷与损失，需由用户自行判断与承担。
+RentSmart AI 不隶属于安居客、贝壳找房或其他房产平台，为独立工具项目。请遵守各平台用户协议与当地法律法规。
+
+<p align="center">
+  <sub>Made with care · 一个产品经理的独立作品</sub>
+</p>

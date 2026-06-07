@@ -1,10 +1,10 @@
-import { useState, useCallback } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Platform } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter, useFocusEffect } from 'expo-router';
-import { getStats, getHistory, type Listing, type AppStats } from '../lib/storage';
-import { Colors, Typography, Spacing, Radius, Shadow } from '../lib/design';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
+import { Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Colors, Radius, Shadow, Spacing, Typography } from '../lib/design';
+import { getFavoritesCount, getHistory, getStats, type AppStats, type Listing } from '../lib/storage';
 
 export default function HomePage() {
   const router = useRouter();
@@ -21,7 +21,11 @@ export default function HomePage() {
   async function loadData() {
     const s = await getStats();
     const history = await getHistory();
-    setStats(s);
+    
+    // ★ 使用实时收藏数量，确保与实际收藏夹内容一致
+    const favoritedCount = await getFavoritesCount();
+    
+    setStats({ ...s, favorited: favoritedCount });
     setRecentListings(history.slice(0, 5)); // 只显示最近 5 条
   }
 

@@ -53,7 +53,15 @@
       "reactCompiler": true
     },
     "extra": {
-      "router": {},
+      "router": {
+        "origin": false,
+        "unstable_settings": {
+          "ignore": [
+            "**/lib/**",
+            "**/components/**"
+          ]
+        }
+      },
       "eas": {
         "projectId": "525cd526-2987-473f-b7ed-bf00c9885d6e"
       }

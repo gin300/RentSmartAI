@@ -1,6 +1,6 @@
 import { AGENT_TOOLS, type AgentTool } from './agent-tools';
-import { getApiConfig } from './storage';
 import { isLegalQuestion, searchLegalKB } from './rag';
+import { getApiConfig } from './storage';
 
 /**
  * 用 RAG 检索内容 + DeepSeek 结合生成法律类回答。
@@ -117,25 +117,39 @@ function toToolDefinitions() {
 }
 
 function buildSystemPrompt(): string {
-  return `你是 RentSmart AI 的租房助手 Agent，像真人顾问一样**先想清楚再行动**：先理解用户要什么、信息够不够，再决定是追问还是调用工具。
+  return `你是 RentSmart AI 的租房助手 Agent，是一个智能顾问而非机械机器人。你能够：
+- 理解用户的真实意图，区分找房、咨询、润色话术等不同场景
+- 像真人顾问一样自然对话，讨论租房建议、分析用户需求
+- 先想清楚用户要什么、信息够不够，再决定是追问还是调用工具
+- 不会把所有包含"房"字的内容都理解为找房需求
 
 【找房 / 检索房源】
 1. **首轮需求对齐（必须先做）**  
    当用户用一段话描述租房/找房需求（含预算、户型、地铁、区域等）时：  
    - **不要立刻调用** search_listings。  
-   - 先**简要复述**你理解的城市、整租/合租、预算、户型、地铁/宠物等要点；若缺**城市**且无法从上下文或用户偏好推断，**只问这一句**，其它不要展开问卷。  
+   - 先**简要复述**你理解的要点，使用Markdown加粗突出关键信息：**城市**、**整租/合租**、**预算**、**户型**、**地铁/宠物**等；若缺**城市**且无法从上下文或用户偏好推断，**只问这一句**，其它不要展开问卷。  
    - 用自然口吻询问：是否还有要补充或修改的？并请用户明确回复可以开始检索（例如「确认」「开始找房」「就按这个」）。  
    - 语气友好、有节奏，避免机械重复用户原话整段照抄。
+   - **例外**：如果你提到"我看到你之前有在XX找房的历史记录"或类似表述，说明你已经从历史记录中获取了完整的筛选条件，此时**必须立即调用 search_listings**，不要等待用户确认。
 
-2. **用户确认后再检索**  
+2. **城市切换（重要）**  
+   当用户明确表示要切换城市（如「我要去武汉」「换到上海」「帮我找北京的房子」「我要去上海找房」）时：  
+   - **必须立即调用 update_search_filters** 工具，传入 city 参数（使用用户当前消息中提到的城市名称，如"武汉"、"上海"、"北京"）  
+   - **不要使用历史消息或上下文中的旧城市信息**，只使用用户当前消息中明确提到的城市  
+   - 确认城市已切换，并使用Markdown加粗告知用户：「好的，城市改为**武汉**，其他条件不变」  
+   - 如果用户同时提出了找房需求，则继续按照找房流程处理
+
+3. **用户确认后再检索**  
    当用户在对话中明确表示「确认 / 没有补充 / 开始找 / 就按这个」等，或应用已代为注入「用户已确认以上找房需求无补充」的说明时：  
-   - 再调用 search_listings；未提及的条件仍按下列**默认**补全：  
+   - **先调用 update_search_filters** 工具，将用户的需求（城市、预算、租房方式、户型、地铁、宠物、区域等）保存到筛选条件中；
+   - **然后调用 search_listings** 进行检索；未提及的条件仍按下列**默认**补全：  
      · rentMode：未说明 → 整租  
      · 预算：未说明 → 不限（不传或 0）  
      · needSubway：仅当用户明确提到近地铁/轨交时为 true  
      · needPets：仅当用户明确提到养宠时为 true  
+   - 这样用户在「找房」页面也能看到已设置的筛选条件，实现Agent与UI的联动。
 
-3. **继续搜房**  
+4. **继续搜房**  
    用户发送「继续搜索」「换一批」等短指令时：筛选条件与上一轮保持一致；应用会自动排除会话里已展示过的房源 id，避免重复推荐。
 
 【精筛 / 多套决策（与「对比表」区分）】
@@ -149,6 +163,40 @@ function buildSystemPrompt(): string {
   · **不确定性与假设**：若缺少通勤/预算等关键信息，需声明假设，并提示用户补充或去详情页做页面级精筛；
   · **可执行建议**：看房、核实产权/费用、谈判等 2–4 条短句。
 - 文风为书面顾问意见，不要用聊天式「好的」开头，不要以「你对哪套感兴趣」代替明确推荐。
+
+【砍价话术生成与润色】
+1. **生成砍价话术**  
+   当用户提到「砍价」「怎么谈」「还价」「谈价格」「能便宜多少」等，且上文中可识别到具体房源 ID 时：
+   - 优先调用 generate_bargain_scripts 工具，传入该房源的 listingId；
+   - 若上文没有明确 ID，先问用户「是哪套房源」或让用户在「找房」页打开详情页使用砍价按钮。
+   - 话术生成后，按 5 类（时间/价格/问题/时效/条件）分段展示，每条后提示可以复制使用。
+
+2. **润色话术**  
+   当用户提到「润色」「改写」「优化话术」「修改话术」「帮我改」「帮我写」等，或直接发送一段话术文本（通常较长，超过50字）时：
+   - 调用 polish_negotiation_script 工具，将用户提供的文本作为 originalText 参数；
+   - 如果用户明确提到风格要求（如「专业一点」「友好一些」「坚定一点」），相应设置 style 参数；
+   - 返回润色后的话术，并简要说明优化要点；
+   - **不要误判为找房需求**：即使话术中包含「房」「租」等字眼，只要用户意图是润色文本，就应该调用润色工具而非搜索房源。
+
+【收藏夹偏好分析与推荐】（重要优化）
+当用户提到「分析收藏夹偏好」「推荐类似房源」「基于收藏夹找房」等，或系统自动触发（收藏夹达到5套房源）时：
+
+**工作流程（用户不可见的内部步骤）：**
+1. 调用 analyze_folder_preferences 工具分析偏好（内部执行，不输出分析过程）
+2. 内部总结：价格区间、区域偏好、户型偏好、特征偏好（不要输出这些统计数据）
+3. 调用 search_by_folder_preferences 工具搜索相似房源（内部执行）
+4. **从搜索结果中智能筛选 3-5 套最匹配的房源**
+
+**用户可见的输出（简洁呈现）：**
+- 一句简短的推荐语（如「根据您的收藏偏好，为您推荐以下房源」）
+- 3-5 套房源卡片
+- 简要说明推荐依据（1-2句话，如「这些房源与您收藏的房源在价格、区域、户型上相似」）
+
+**严格禁止：**
+- ❌ 不要输出详细的分析过程和统计数据
+- ❌ 不要显示工具调用信息
+- ❌ 不要展示「价格集中在 X-Y 元」「X% 近地铁」等详细统计
+- ❌ 不要用 Markdown 表格展示偏好分析
 
 【其他对话】
 - 法律问题优先走法律知识库相关能力
@@ -274,7 +322,51 @@ function stripDsmlToolLeak(content: string): string {
 }
 
 export function isLikelyListingSearchIntent(userInput: string): boolean {
-  return /找房|租房|房源|整租|合租|公寓|短租|预算|地铁|室|居|套|小区|商圈/.test(userInput);
+  const input = userInput.trim();
+  
+  // 排除明确的非找房意图
+  // 1. 话术润色/改写请求（优先级最高）
+  if (/润色|改写|优化话术|修改话术|帮我改|帮我写|重写|换个说法|修改一下|优化一下/.test(input)) {
+    return false;
+  }
+  
+  // 2. 砍价谈判相关（但不是生成话术）
+  if (/怎么说|怎么谈|砍价话术|谈判技巧|怎么砍价/.test(input) && !/找房|租房|房源/.test(input)) {
+    return false;
+  }
+  
+  // 3. 长文本内容（可能是用户发来的话术）
+  // 如果输入超过50字，且前30字没有明确找房意图，很可能是话术文本
+  if (input.length > 50) {
+    const prefix = input.substring(0, 30);
+    const hasSearchIntent = /我想找|我要租|帮我找|搜索|查找|找.*房/.test(prefix);
+    const hasPolishIntent = /润色|改写|优化|修改|帮我改/.test(prefix);
+    
+    // 如果有润色意图或没有找房意图，不认为是找房
+    if (hasPolishIntent || !hasSearchIntent) {
+      return false;
+    }
+  }
+  
+  // 4. 咨询讨论类（不是直接找房）
+  if (/适合|建议|推荐|怎么样|如何|什么样|哪种|分析|评价|意见/.test(input) && 
+      !/找|租|搜|查/.test(input)) {
+    return false;
+  }
+  
+  // 5. 法律咨询类
+  if (/押金|合同|维权|违约|纠纷|退租|法律|起诉|仲裁/.test(input)) {
+    return false;
+  }
+  
+  // 6. 包含大量标点符号和换行（可能是话术文本）
+  const punctuationCount = (input.match(/[，。！？、；：""''（）【】《》]/g) || []).length;
+  if (punctuationCount > 5 && input.length > 40) {
+    return false;
+  }
+  
+  // 确认是找房意图：包含明确的找房关键词
+  return /找房|租房|房源|整租|合租|公寓|短租|预算.*元|地铁.*房|[一二三1-3]室|[一二三1-3]居|.*套房|小区.*房|商圈.*房/.test(input);
 }
 
 export async function runAgent(
@@ -319,16 +411,12 @@ export async function runAgent(
     }
   }
 
-  // 强制重试后仍无 tool_calls，但正文仍像工具泄漏：直接执行 search_listings，避免用户只看到「源码」
-  if (
-    toolCalls.length === 0 &&
-    isLikelyListingSearchIntent(userInput) &&
-    containsDsmlToolLeak(String(firstMessage?.content || ''))
-  ) {
+  // 强制重试后仍无 tool_calls：如果是找房意图，直接执行 search_listings
+  if (toolCalls.length === 0 && isLikelyListingSearchIntent(userInput)) {
     const tool = getToolByName('search_listings');
     if (tool) {
       // #region agent log
-      fetch('http://127.0.0.1:7750/ingest/c7852349-c1c4-418e-b862-f082a33bb43e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'cb84fa'},body:JSON.stringify({sessionId:'cb84fa',location:'agent-engine.ts:runAgent',message:'manual_search_listings_after_dsml',data:{},timestamp:Date.now(),hypothesisId:'H-leak'})}).catch(()=>{});
+      fetch('http://127.0.0.1:7750/ingest/c7852349-c1c4-418e-b862-f082a33bb43e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'cb84fa'},body:JSON.stringify({sessionId:'cb84fa',location:'agent-engine.ts:runAgent',message:'manual_search_listings_force_execute',data:{},timestamp:Date.now(),hypothesisId:'H-force-search'})}).catch(()=>{});
       // #endregion
       const result = await tool.execute({});
       return normalizeResponseByTool('search_listings', result);
@@ -359,6 +447,11 @@ export async function runAgent(
       lastToolName = toolName;
       lastToolResult = result;
 
+      // Debug log for search_listings
+      if (toolName === 'search_listings') {
+        console.log('[Agent] search_listings raw result:', JSON.stringify(result).substring(0, 300));
+      }
+
       messagesWithTools.push({
         role: 'tool',
         tool_call_id: call.id,
@@ -369,20 +462,37 @@ export async function runAgent(
 
     // 二次调用，生成最终回复
     const secondRes = await callDeepSeek(apiKey, messagesWithTools, false);
-    const finalText = stripDsmlToolLeak(
-      secondRes?.choices?.[0]?.message?.content?.trim() || '已完成工具调用，但未生成文本回复。',
+    let finalText = stripDsmlToolLeak(
+      secondRes?.choices?.[0]?.message?.content?.trim() || '',
     );
 
-    const normalized = normalizeResponseByTool(lastToolName, lastToolResult);
-    if (lastToolName === 'search_listings') {
-      return normalized;
+    // 防止空回复
+    if (!finalText || finalText.trim().length === 0) {
+      finalText = '已完成工具调用，但未生成文本回复。';
     }
-    return {
+
+    const normalized = normalizeResponseByTool(lastToolName, lastToolResult);
+    
+    // 检查返回结果是否包含 listings 数组（无论工具名称是什么）
+    // 这样 update_search_filters 自动调用 search_listings 后也能正确返回 listing_cards
+    if (Array.isArray(lastToolResult?.listings) && lastToolResult.listings.length >= 0) {
+      console.log('[Agent] Detected listings array, setting type to listing_cards, count:', lastToolResult.listings.length);
+      const finalResponse = {
+        type: 'listing_cards' as const,
+        content: normalized.content,
+        data: lastToolResult.listings,
+      };
+      console.log('[Agent] Final return:', JSON.stringify(finalResponse).substring(0, 200));
+      return finalResponse;
+    }
+    const finalResponse = {
       ...normalized,
       content: finalText,
       sources: normalized.sources,
       data: normalized.data,
     };
+    console.log('[Agent] Final return:', JSON.stringify(finalResponse).substring(0, 200));
+    return finalResponse;
   }
 
   // Step B-2: 直接返回文本

@@ -1,18 +1,31 @@
-import { useState, useCallback } from 'react';
-import {
-  View, Text, ScrollView, TouchableOpacity, TextInput,
-  StyleSheet, Alert, Linking, ActivityIndicator, Platform,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
 import {
-  getApiConfig, saveApiConfig,
-  clearHistory, clearFavorites, getPrefs, savePrefs,
-  type CommuteRouteMode,
+  ActivityIndicator,
+  Alert, Linking,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Colors, Radius, Spacing, Typography } from '../lib/design';
+import {
+  clearFavorites,
+  clearHistory,
+  getApiConfig,
+  getPlatformLoginStatus,
+  getPrefs,
+  saveApiConfig,
+  savePrefs,
+  setPlatformLoggedIn,
+  type CommuteRouteMode, type PlatformLoginStatus,
 } from '../lib/storage';
-import { Colors, Typography, Spacing, Radius } from '../lib/design';
 
 const BUILT_IN_MODELS = [
   { id: 'deepseek', name: 'DeepSeek', desc: '文本分析（初筛默认）', type: 'text', free: true },
@@ -42,10 +55,13 @@ export default function ProfilePage() {
   const [glmApiKey, setGlmApiKey] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [customApiBase, setCustomApiBase] = useState('');
+  const [amapKey, setAmapKey] = useState('');
+  const [amapJsKey, setAmapJsKey] = useState('');
   const [workAddress, setWorkAddress] = useState('');
   const [commuteRouteMode, setCommuteRouteMode] = useState<CommuteRouteMode>('transit');
   const [showCustom, setShowCustom] = useState(false);
   const [locationLoading, setLocationLoading] = useState(false);
+  const [platformLogin, setPlatformLogin] = useState<PlatformLoginStatus>({});
 
   // 页面加载时读取配置
   useFocusEffect(
@@ -58,13 +74,17 @@ export default function ProfilePage() {
     const config = await getApiConfig();
     setTextModel(config.textModel);
     setVisionModel(config.visionModel);
-    setDeepseekApiKey(config.deepseekApiKey || config.apiKey || '');
-    setGlmApiKey(config.glmApiKey || config.apiKey || '');
+    setDeepseekApiKey(config.deepseekApiKey || '');
+    setGlmApiKey(config.glmApiKey || '');
     setApiKey(config.apiKey || '');
     setCustomApiBase(config.apiBase);
+    setAmapKey(config.amapKey || '');
+    setAmapJsKey(config.amapJsKey || '');
     setCommuteRouteMode(config.commuteRouteMode || 'transit');
     const prefs = await getPrefs();
     setWorkAddress(prefs.workAddress || '');
+    const loginStatus = await getPlatformLoginStatus();
+    setPlatformLogin(loginStatus);
   }
 
   async function getCurrentLocation() {
@@ -86,7 +106,11 @@ export default function ProfilePage() {
       // 使用高德地图逆地理编码获取地址
       const config = await getApiConfig();
       const { latitude, longitude } = location.coords;
-      const amapKey = config.amapKey || '1beebb29ec2b17017ec1603083aef3c4';
+      const amapKey = config.amapKey || '';
+      if (!amapKey) {
+        Alert.alert('未配置高德 Key', '请先在「我的设置」中填写高德 Web 服务 Key');
+        return;
+      }
       
       const params = new URLSearchParams({
         key: amapKey,
@@ -206,54 +230,140 @@ export default function ProfilePage() {
           )}
         </View>
 
-        {/* API Key */}
+        {/* DeepSeek API Key */}
         <View style={s.section}>
           <View style={s.sectionTitleRow}>
             <Ionicons name="key-outline" size={18} color={Colors.primary} />
-            <Text style={s.sectionTitle}>API Key</Text>
+            <Text style={s.sectionTitle}>DeepSeek API Key</Text>
           </View>
-          <Text style={s.sectionDesc}>已预置默认 Key，可按需替换</Text>
+          <Text style={s.sectionDesc}>用于初筛评分、对比报告、聊天助手、砍价话术</Text>
+
+          {/* 申请步骤指引 */}
+          <View style={s.guideCard}>
+            <Text style={s.guideTitle}>📋 申请步骤</Text>
+            <Text style={s.guideStep}>① 访问 platform.deepseek.com</Text>
+            <Text style={s.guideStep}>② 注册账号并登录</Text>
+            <Text style={s.guideStep}>③ 控制台 → API Keys → 创建新 Key</Text>
+            <Text style={s.guideStep}>④ 复制 Key 粘贴到下方输入框</Text>
+            <TouchableOpacity
+              style={s.guideLink}
+              onPress={() => Linking.openURL('https://platform.deepseek.com/api_keys')}
+            >
+              <Text style={s.guideLinkText}>前往 DeepSeek 控制台 →</Text>
+            </TouchableOpacity>
+          </View>
+
           <TextInput
             style={s.input}
-            placeholder="DeepSeek API Key"
+            placeholder="粘贴你的 DeepSeek API Key"
             placeholderTextColor="#bbb"
             secureTextEntry
             value={deepseekApiKey}
             onChangeText={setDeepseekApiKey}
           />
+        </View>
+
+        {/* GLM API Key */}
+        <View style={s.section}>
+          <View style={s.sectionTitleRow}>
+            <Ionicons name="key-outline" size={18} color={Colors.primary} />
+            <Text style={s.sectionTitle}>智谱 GLM API Key</Text>
+          </View>
+          <Text style={s.sectionDesc}>用于精筛识图分析（GLM-4V）、海报识别</Text>
+
+          {/* 申请步骤指引 */}
+          <View style={s.guideCard}>
+            <Text style={s.guideTitle}>📋 申请步骤</Text>
+            <Text style={s.guideStep}>① 访问 open.bigmodel.cn</Text>
+            <Text style={s.guideStep}>② 注册账号并登录</Text>
+            <Text style={s.guideStep}>③ 控制台 → API Keys → 添加新 Key</Text>
+            <Text style={s.guideStep}>④ 复制 Key 粘贴到下方输入框</Text>
+            <TouchableOpacity
+              style={s.guideLink}
+              onPress={() => Linking.openURL('https://open.bigmodel.cn/usercenter/apikeys')}
+            >
+              <Text style={s.guideLinkText}>前往智谱控制台 →</Text>
+            </TouchableOpacity>
+          </View>
+
           <TextInput
-            style={[s.input, { marginTop: 8 }]}
-            placeholder="GLM API Key"
+            style={s.input}
+            placeholder="粘贴你的智谱 GLM API Key"
             placeholderTextColor="#bbb"
             secureTextEntry
             value={glmApiKey}
             onChangeText={setGlmApiKey}
           />
-          <TextInput
-            style={[s.input, { marginTop: 8 }]}
-            placeholder="通用 API Key（OpenAI/Claude/Gemini/千问/自定义）"
-            placeholderTextColor="#bbb"
-            secureTextEntry
-            value={apiKey}
-            onChangeText={setApiKey}
-          />
-          {(visionModel === 'custom') && (
+        </View>
+
+        {/* 其他模型 API Key（可选） */}
+        {(visionModel === 'openai' || visionModel === 'gemini' || visionModel === 'claude' || visionModel === 'qwen' || visionModel === 'custom') && (
+          <View style={s.section}>
+            <View style={s.sectionTitleRow}>
+              <Ionicons name="key-outline" size={18} color={Colors.primary} />
+              <Text style={s.sectionTitle}>其他模型 API Key</Text>
+            </View>
+            <Text style={s.sectionDesc}>OpenAI / Claude / Gemini / 千问 / 自定义接口</Text>
             <TextInput
-              style={[s.input, { marginTop: 8 }]}
-              placeholder="API Base URL（OpenAI 兼容接口）"
+              style={s.input}
+              placeholder="粘贴对应模型的 API Key"
               placeholderTextColor="#bbb"
-              value={customApiBase}
-              onChangeText={setCustomApiBase}
+              secureTextEntry
+              value={apiKey}
+              onChangeText={setApiKey}
             />
-          )}
-          <View style={s.linkRow}>
-            <TouchableOpacity onPress={() => Linking.openURL('https://platform.deepseek.com')}>
-              <Text style={s.linkText}>DeepSeek →</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => Linking.openURL('https://open.bigmodel.cn')}>
-              <Text style={s.linkText}>智谱GLM →</Text>
+            {visionModel === 'custom' && (
+              <TextInput
+                style={[s.input, { marginTop: 8 }]}
+                placeholder="API Base URL（OpenAI 兼容接口地址）"
+                placeholderTextColor="#bbb"
+                value={customApiBase}
+                onChangeText={setCustomApiBase}
+              />
+            )}
+          </View>
+        )}
+
+        {/* 高德地图 Key */}
+        <View style={s.section}>
+          <View style={s.sectionTitleRow}>
+            <Ionicons name="map-outline" size={18} color={Colors.primary} />
+            <Text style={s.sectionTitle}>高德地图 Key</Text>
+          </View>
+          <Text style={s.sectionDesc}>用于通勤距离估算、地图选点、逆地理编码</Text>
+
+          {/* 申请步骤指引 */}
+          <View style={s.guideCard}>
+            <Text style={s.guideTitle}>📋 申请步骤</Text>
+            <Text style={s.guideStep}>① 访问 lbs.amap.com 注册/登录</Text>
+            <Text style={s.guideStep}>② 控制台 → 应用管理 → 创建新应用</Text>
+            <Text style={s.guideStep}>③ 添加 Key：平台选「Web 服务」→ 复制填到下方第一栏</Text>
+            <Text style={s.guideStep}>④ 再添加一个 Key：平台选「Web 端(JS API)」→ 复制填到第二栏</Text>
+            <Text style={s.guideStep}>⑤ 保存设置即可</Text>
+            <TouchableOpacity
+              style={s.guideLink}
+              onPress={() => Linking.openURL('https://console.amap.com/dev/key/app')}
+            >
+              <Text style={s.guideLinkText}>前往高德控制台 →</Text>
             </TouchableOpacity>
           </View>
+
+          <TextInput
+            style={s.input}
+            placeholder="Web 服务 Key（用于路径规划、逆地理编码）"
+            placeholderTextColor="#bbb"
+            secureTextEntry
+            value={amapKey}
+            onChangeText={setAmapKey}
+          />
+          <TextInput
+            style={[s.input, { marginTop: 8 }]}
+            placeholder="Web JS API Key（用于地图选点页面渲染）"
+            placeholderTextColor="#bbb"
+            secureTextEntry
+            value={amapJsKey}
+            onChangeText={setAmapJsKey}
+          />
         </View>
 
         {/* 通勤规划方式 */}
@@ -342,6 +452,8 @@ export default function ProfilePage() {
                 deepseekApiKey,
                 glmApiKey,
                 apiBase: customApiBase,
+                amapKey,
+                amapJsKey,
                 commuteRouteMode,
               });
               await savePrefs({ workAddress: workAddress.trim() });
@@ -353,6 +465,48 @@ export default function ProfilePage() {
               <Text style={s.saveBtnText}>保存设置</Text>
             </View>
           </TouchableOpacity>
+        </View>
+
+        {/* 平台账号 */}
+        <View style={s.section}>
+          <View style={s.sectionTitleRow}>
+            <Ionicons name="log-in-outline" size={18} color={Colors.primary} />
+            <Text style={s.sectionTitle}>平台账号</Text>
+          </View>
+          <Text style={s.sectionDesc}>在 App 内完成登录，贝壳/安居客自动看房时无需再次验证</Text>
+          {([
+            { key: 'beike' as const, label: '贝壳找房', hint: '自动看房必填' },
+            { key: 'anjuke' as const, label: '安居客', hint: '可选，多数情况免登录' },
+            { key: 'lianjia' as const, label: '链家', hint: '可选' },
+            { key: 'xiaohongshu' as const, label: '小红书', hint: '可选' },
+          ] as { key: keyof PlatformLoginStatus; label: string; hint: string }[]).map(({ key, label, hint }) => (
+            <View key={key} style={s.platformLoginRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={s.platformLoginLabel}>{label}</Text>
+                <Text style={s.platformLoginHint}>{hint}</Text>
+              </View>
+              {platformLogin[key] ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }}>
+                  <Ionicons name="checkmark-circle" size={18} color={Colors.success} />
+                  <TouchableOpacity
+                    onPress={async () => {
+                      await setPlatformLoggedIn(key, false);
+                      setPlatformLogin(prev => ({ ...prev, [key]: false }));
+                    }}
+                  >
+                    <Text style={{ fontSize: 12, color: Colors.textTertiary }}>退出</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={s.platformLoginBtn}
+                  onPress={() => router.push(`/platform-login?platform=${key}`)}
+                >
+                  <Text style={s.platformLoginBtnText}>去登录</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          ))}
         </View>
 
         {/* 数据管理 */}
@@ -571,4 +725,50 @@ const s = StyleSheet.create({
   },
   aboutTitle: { fontSize: 14, fontWeight: '600', color: '#333' },
   aboutDesc: { fontSize: 12, color: '#999', marginTop: 6, textAlign: 'center', lineHeight: 18 },
+
+  platformLoginRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: Spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.divider,
+    minHeight: 48,
+  },
+  platformLoginLabel: { ...Typography.body1, color: Colors.textPrimary, fontWeight: '500' },
+  platformLoginHint: { ...Typography.label, color: Colors.textTertiary, marginTop: 2 },
+  platformLoginBtn: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    backgroundColor: Colors.primary,
+    borderRadius: Radius.sm,
+  },
+  platformLoginBtnText: { fontSize: 12, fontWeight: '600', color: Colors.textInverse },
+
+  guideCard: {
+    backgroundColor: Colors.bgSecondary,
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    marginBottom: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.divider,
+  },
+  guideTitle: {
+    ...Typography.h4,
+    color: Colors.textPrimary,
+    marginBottom: Spacing.sm,
+  },
+  guideStep: {
+    ...Typography.body2,
+    color: Colors.textSecondary,
+    lineHeight: 22,
+  },
+  guideLink: {
+    marginTop: Spacing.sm,
+    alignSelf: 'flex-start',
+  },
+  guideLinkText: {
+    ...Typography.body2,
+    color: Colors.primary,
+    fontWeight: '600',
+  },
 });
